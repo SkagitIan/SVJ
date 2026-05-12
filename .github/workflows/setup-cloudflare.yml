@@ -43,6 +43,11 @@ jobs:
           echo "D1_DATABASE_ID=$DB_ID" >> $GITHUB_OUTPUT
           echo "::notice title=ACTION REQUIRED::Add this as GitHub secret CF_D1_DATABASE_ID: $DB_ID"
 
+      - name: Inject D1 ID into wrangler.toml
+        run: |
+          sed -i 's/REPLACE_WITH_YOUR_D1_ID/${{ steps.create_d1.outputs.D1_DATABASE_ID }}/' wrangler.toml
+          echo "wrangler.toml updated with ID: ${{ steps.create_d1.outputs.D1_DATABASE_ID }}"
+
       - name: Apply D1 schema
         run: npx wrangler d1 execute skagitjobs --remote --file=schema.sql
 
