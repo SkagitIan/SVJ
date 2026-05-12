@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Skagit Valley Jobs — Local Jobs in Skagit County, WA</title>
+  <meta name="description" content="Find local jobs in Mount Vernon, Burlington, Sedro-Woolley, Anacortes and across Skagit County, WA." />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #f8fafc;
+      --surface: #ffffff;
+      --border:  #e2e8f0;
+      --text:    #0f172a;
+      --muted:   #64748b;
+      --blue:    #2563eb;
+      --blue-lt: #eff6ff;
+      --green:   #16a34a;
+      --green-lt:#f0fdf4;
+      --radius:  10px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 15px;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      background: var(--blue);
+      color: #fff;
+      padding: 36px 24px 32px;
+      text-align: center;
+    }
+    header h1 { font-size: 28px; font-weight: 800; letter-spacing: -0.5px; }
+    header p  { margin-top: 6px; opacity: 0.85; font-size: 15px; }
+
+    /* ── Filters ── */
+    .filter-bar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    }
+    .filter-inner {
+      max-width: 900px;
+      margin: 0 auto;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .filter-inner input,
+    .filter-inner select {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 9px 14px;
+      border-radius: 8px;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .filter-inner input:focus,
+    .filter-inner select:focus { border-color: var(--blue); }
+    .filter-inner input { flex: 1; min-width: 180px; }
+    #clearBtn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 9px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    #clearBtn:hover { border-color: var(--blue); color: var(--blue); }
+
+    /* ── Main ── */
+    main { max-width: 900px; margin: 0 auto; padding: 24px; }
+
+    .meta-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    /* ── Job Cards ── */
+    #results { display: flex; flex-direction: column; gap: 12px; }
+
+    .job-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 4px 12px;
+      transition: box-shadow 0.15s, border-color 0.15s;
+    }
+    .job-card:hover {
+      box-shadow: 0 4px 12px rgba(0,0,0,0.07);
+      border-color: #cbd5e1;
+    }
+
+    .job-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+      grid-column: 1;
+    }
+    .apply-btn {
+      grid-column: 2;
+      grid-row: 1 / 3;
+      align-self: center;
+      background: var(--blue);
+      color: #fff;
+      border: none;
+      padding: 9px 18px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .apply-btn:hover { background: #1d4ed8; }
+    .apply-btn.no-link {
+      background: var(--border);
+      color: var(--muted);
+      cursor: default;
+    }
+
+    .job-meta {
+      grid-column: 1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 6px;
+      align-items: center;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .chip-sep { color: #cbd5e1; }
+    .badge-new {
+      background: var(--green-lt);
+      color: var(--green);
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    .salary {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--green);
+      grid-column: 1;
+      margin-top: 4px;
+    }
+
+    /* ── Load More ── */
+    #loadMore {
+      display: none;
+      margin: 24px auto 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--blue);
+      padding: 11px 28px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    #loadMore:hover { background: var(--blue-lt); }
+
+    /* ── States ── */
+    .state-msg {
+      text-align: center;
+      padding: 60px 0;
+      color: var(--muted);
+    }
+    .state-msg h2 { font-size: 18px; margin-bottom: 8px; color: var(--text); }
+
+    footer {
+      text-align: center;
+      padding: 32px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    footer a { color: var(--blue); text-decoration: none; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Skagit Valley Jobs</h1>
+  <p>Local jobs from real Skagit County businesses, updated daily.</p>
+</header>
+
+<div class="filter-bar">
+  <div class="filter-inner">
+    <input type="text" id="qInput" placeholder="Search job titles…" />
+    <select id="citySelect">
+      <option value="">All Cities</option>
+      <option>Mount Vernon</option>
+      <option>Burlington</option>
+      <option>Sedro-Woolley</option>
+      <option>Anacortes</option>
+      <option>Concrete</option>
+      <option>La Conner</option>
+      <option>Bow</option>
+    </select>
+    <select id="industrySelect">
+      <option value="">All Industries</option>
+      <option>Manufacturing</option>
+      <option>Agriculture</option>
+      <option>Healthcare</option>
+      <option>Hospitality</option>
+      <option>Construction</option>
+      <option>Technology</option>
+      <option>Retail</option>
+      <option>Other</option>
+    </select>
+    <button id="clearBtn" onclick="clearFilters()">Clear</button>
+  </div>
+</div>
+
+<main>
+  <div class="meta-bar">
+    <span id="resultCount"></span>
+  </div>
+  <div id="results"></div>
+  <button id="loadMore" onclick="loadMore()">Load more jobs</button>
+</main>
+
+<footer>
+  Jobs sourced directly from Skagit County business websites and updated daily. &nbsp;|&nbsp;
+  <a href="/dashboard/">Admin</a>
+</footer>
+
+<script>
+  // ── Config ────────────────────────────────────────────────────────────────
+  const API_BASE = window.location.hostname === 'localhost'
+    ? 'http://localhost:8787'
+    : 'https://skagitvalleyjobs.YOUR_WORKER_SUBDOMAIN.workers.dev';
+
+  const NOW = Math.floor(Date.now() / 1000);
+  const ONE_DAY = 86400;
+
+  let page = 1;
+  let loading = false;
+  let hasMore = true;
+  let debounceTimer;
+
+  // ── Fetch Jobs ────────────────────────────────────────────────────────────
+  async function fetchJobs(reset = false) {
+    if (loading) return;
+    loading = true;
+
+    if (reset) {
+      page = 1;
+      hasMore = true;
+      document.getElementById('results').innerHTML = '';
+      document.getElementById('loadMore').style.display = 'none';
+    }
+
+    const q        = document.getElementById('qInput').value.trim();
+    const city     = document.getElementById('citySelect').value;
+    const industry = document.getElementById('industrySelect').value;
+
+    const params = new URLSearchParams({ page });
+    if (q)        params.set('q', q);
+    if (city)     params.set('city', city);
+    if (industry) params.set('industry', industry);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/jobs?${params}`);
+      if (!res.ok) throw new Error('API error');
+      const data = await res.json();
+      renderJobs(data.jobs, reset);
+      hasMore = data.jobs.length === data.limit;
+      page++;
+
+      if (reset) {
+        const total = hasMore ? `${page * data.limit - data.limit}+` : data.jobs.length;
+        document.getElementById('resultCount').textContent =
+          data.jobs.length ? `${total} jobs found` : '';
+      }
+    } catch (e) {
+      if (reset) {
+        document.getElementById('results').innerHTML =
+          '<div class="state-msg"><h2>Couldn\'t load jobs</h2><p>Please try again in a moment.</p></div>';
+      }
+    } finally {
+      loading = false;
+      document.getElementById('loadMore').style.display =
+        hasMore ? 'block' : 'none';
+    }
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
+  function renderJobs(jobs, reset) {
+    const container = document.getElementById('results');
+    if (reset && !jobs.length) {
+      container.innerHTML =
+        '<div class="state-msg"><h2>No jobs found</h2><p>Try adjusting your filters.</p></div>';
+      return;
+    }
+
+    const html = jobs.map(job => {
+      const isNew = (NOW - job.first_seen_at) < ONE_DAY;
+      const applyHref = job.application_url ?? '#';
+      const applyClass = job.application_url ? '' : ' no-link';
+      const applyTarget = job.application_url ? 'target="_blank" rel="noopener"' : '';
+
+      return `
+        <div class="job-card">
+          <div class="job-title">
+            ${esc(job.job_title)}
+            ${isNew ? '<span class="badge-new">New</span>' : ''}
+          </div>
+          <a class="apply-btn${applyClass}" href="${esc(applyHref)}" ${applyTarget}>Apply →</a>
+          <div class="job-meta">
+            <span class="chip">🏢 ${esc(job.business_name)}</span>
+            <span class="chip-sep">·</span>
+            <span class="chip">📍 ${esc(job.city)}</span>
+            <span class="chip-sep">·</span>
+            <span class="chip">🏷 ${esc(job.industry)}</span>
+            ${job.department ? `<span class="chip-sep">·</span><span class="chip">${esc(job.department)}</span>` : ''}
+          </div>
+          ${job.salary_info ? `<div class="salary">💰 ${esc(job.salary_info)}</div>` : ''}
+        </div>`;
+    }).join('');
+
+    container.insertAdjacentHTML('beforeend', html);
+  }
+
+  // ── Controls ──────────────────────────────────────────────────────────────
+  function loadMore() { if (hasMore) fetchJobs(false); }
+
+  function clearFilters() {
+    document.getElementById('qInput').value = '';
+    document.getElementById('citySelect').value = '';
+    document.getElementById('industrySelect').value = '';
+    fetchJobs(true);
+  }
+
+  ['citySelect', 'industrySelect'].forEach(id =>
+    document.getElementById(id).addEventListener('change', () => fetchJobs(true))
+  );
+
+  document.getElementById('qInput').addEventListener('input', () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => fetchJobs(true), 350);
+  });
+
+  function esc(s) {
+    return String(s ?? '')
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+  fetchJobs(true);
+</script>
+</body>
+</html>
