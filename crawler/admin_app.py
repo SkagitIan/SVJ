@@ -1545,7 +1545,7 @@ async def crawl_company_by_id(
             raise ValueError("Company not found.")
         seed = company_row_to_seed(row)
     if str(seed.get("extraction_provider") or "").lower() != "cloudflare":
-        raise RuntimeError("Local Playwright crawling is deprecated on Railway. Re-verify this company through Discovery so it gets a Cloudflare extraction provider.")
+        seed["extraction_provider"] = "cloudflare"
     await process_seed(
         seed,
         max_candidate_pages=1,
