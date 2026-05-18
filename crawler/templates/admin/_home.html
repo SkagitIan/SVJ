@@ -1,0 +1,47 @@
+<div class="stats">
+  <div class="stat"><strong>{{ stats.companies }}</strong><span>Companies</span></div>
+  <div class="stat"><strong>{{ stats.active_jobs }}</strong><span>Active jobs</span></div>
+  <div class="stat"><strong>{{ stats.featured_companies }}</strong><span>Featured companies</span></div>
+  <div class="stat"><strong>{{ stats.featured_jobs }}</strong><span>Sticky jobs</span></div>
+</div>
+<div class="recent">
+  <section class="panel">
+    <h2>Featured Companies</h2>
+    <table>
+      <tbody>
+        {% for company in companies if company.is_featured %}
+          <tr>
+            <td><div class="title">{{ company.business_name }}</div><div class="sub">{{ company.jobs_url }}</div></td>
+            <td>{{ company.active_job_count or 0 }} jobs</td>
+            <td class="actions">
+              <form class="inline" method="post" action="{{ url_for('toggle_company_featured', company_id=company.id) }}">
+                <button class="switch-button" type="submit" aria-label="Turn off featured company"></button>
+              </form>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="3" class="muted">No featured companies yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  <section class="panel">
+    <h2>Sticky Jobs</h2>
+    <table>
+      <tbody>
+        {% for job in jobs if job.is_featured %}
+          <tr>
+            <td><div class="title">{{ job.job_title }}</div><div class="sub">{{ job.business_name }} | {{ job.location or "Unknown" }}</div></td>
+            <td class="actions">
+              <form class="inline" method="post" action="{{ url_for('toggle_job_featured', job_id=job.id) }}">
+                <button class="switch-button" type="submit" aria-label="Turn off sticky job"></button>
+              </form>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="2" class="muted">No sticky jobs yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>

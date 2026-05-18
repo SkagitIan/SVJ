@@ -1,0 +1,12 @@
+<aside>
+  <div class="brand">Skagit Jobs</div>
+  <nav>
+    <a class="{% if active_tab == 'home' %}active{% endif %}" href="{{ url_for('index', tab='home') }}">Home <span></span></a>
+    <a class="{% if active_tab == 'companies' %}active{% endif %}" href="{{ url_for('index', tab='companies') }}">Companies <span>{{ stats.companies }}</span></a>
+    <a class="{% if active_tab == 'discovery' %}active{% endif %}" href="{{ url_for('index', tab='discovery') }}">Discovery <span>{{ stats.discoveries }}</span></a>
+    <a class="{% if active_tab == 'jobs' %}active{% endif %}" href="{{ url_for('index', tab='jobs') }}">Jobs <span>{{ stats.active_jobs }}</span></a>
+    <a class="{% if active_tab == 'tasks' %}active{% endif %}" href="{{ url_for('index', tab='tasks') }}">Tasks <span>{{ stats.active_tasks }}</span></a>
+    <a class="{% if active_tab == 'errors' %}active{% endif %}" href="{{ url_for('index', tab='errors') }}">Errors <span>{{ stats.errors }}</span></a>
+    <a class="{% if active_tab == 'settings' %}active{% endif %}" href="{{ url_for('index', tab='settings') }}">Settings <span></span></a>
+  </nav>
+</aside>

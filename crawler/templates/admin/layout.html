@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jobs Admin</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <link rel="stylesheet" href="{{ url_for('static', filename='admin/admin.css') }}">
+</head>
+<body class="min-h-screen bg-slate-100 text-slate-900 antialiased">
+  <div class="shell">
+    {% include "admin/_nav.html" %}
+    <div class="content">
+      <header>
+        <h1>{% if active_tab == 'companies' %}Companies{% elif active_tab == 'discovery' %}Discovery{% elif active_tab == 'jobs' %}Jobs{% elif active_tab == 'tasks' %}Tasks{% elif active_tab == 'errors' %}Errors{% elif active_tab == 'settings' %}Settings{% else %}Home{% endif %}</h1>
+        <div class="muted">Railway Postgres admin</div>
+      </header>
+      <main>
+        {% for category, message in get_flashed_messages(with_categories=true) %}
+          <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+        {% block content %}{% endblock %}
+        {% include "admin/_dialogs.html" %}
+      </main>
+    </div>
+  </div>
+  <script src="{{ url_for('static', filename='admin/admin.js') }}" defer></script>
+</body>
+</html>

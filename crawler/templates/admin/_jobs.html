@@ -1,0 +1,56 @@
+<section class="panel">
+  <div class="toolbar">
+    <h2>Current Jobs</h2>
+    <form class="search" method="get" action="{{ url_for('index') }}">
+      <input type="hidden" name="tab" value="jobs">
+      <input name="q" value="{{ query }}" placeholder="Search title, company, location">
+      <button type="submit">Search</button>
+      {% if query %}<a class="button" href="{{ url_for('index', tab='jobs') }}">Clear</a>{% endif %}
+    </form>
+  </div>
+  <table class="jobs-table">
+    <thead>
+      <tr><th>Job</th><th>Company</th><th>Seen</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+        <tr>
+          <td>
+            <div class="job-title-wrap">
+              <button
+                class="job-title-link"
+                type="button"
+                data-job-title="{{ job.job_title|e }}"
+                data-job-company="{{ job.business_name|e }}"
+                data-job-location="{{ (job.location or 'Unknown')|e }}"
+                data-job-meta="{{ (job.department or job.source_type or '')|e }}{% if job.salary_info %} | {{ job.salary_info|e }}{% endif %}"
+                data-job-description="{{ (job.description or 'No description captured yet.')|e }}"
+                data-job-url="{{ (job.application_url or '')|e }}"
+              >{{ job.job_title }}</button>
+              <div class="job-preview">
+                <div class="task-title">{{ job.job_title }}</div>
+                <div class="preview-meta">{{ job.business_name }} | {{ job.location or "Unknown" }}</div>
+                <div class="preview-text">{{ job.description or "No description captured yet." }}</div>
+              </div>
+            </div>
+            <div class="sub">{{ job.location or "Unknown" }} | {{ job.department or job.source_type }}{% if job.salary_info %} | {{ job.salary_info }}{% endif %}</div>
+            {% if job.is_new %}<span class="pill feature">new</span>{% endif %}
+            {% if job.is_featured %}<span class="pill feature">sticky</span>{% endif %}
+          </td>
+          <td><span class="company-name">{{ job.business_name }}</span>{% if job.company_is_featured %}<div><span class="pill feature">featured</span></div>{% endif %}</td>
+          <td><span class="muted">{{ display_time(job.last_seen_at) }}</span></td>
+          <td class="actions">
+            <form class="inline" method="post" action="{{ url_for('toggle_job_featured', job_id=job.id) }}">
+              <button class="{% if job.is_featured %}featured{% endif %} icon-button" type="submit" aria-label="Toggle sticky job" title="Sticky"><i class="fa-solid fa-thumbtack"></i></button>
+            </form>
+            <form class="inline" method="post" action="{{ url_for('delete_job', job_id=job.id) }}" data-confirm="Delete this job?">
+              <button class="danger icon-button" type="submit" aria-label="Delete job"><i class="fa-solid fa-trash"></i></button>
+            </form>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="4" class="muted">No active jobs found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>

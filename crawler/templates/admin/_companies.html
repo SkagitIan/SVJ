@@ -1,0 +1,64 @@
+<section class="panel">
+  <div class="table-toolbar">
+    <h2>Companies</h2>
+    <button class="primary" type="button" data-open-dialog="add-company-dialog">+ Company</button>
+  </div>
+  <div class="company-list">
+    <div class="company-list-head">
+      <div>Company</div>
+      <div>Jobs</div>
+      <div></div>
+    </div>
+    {% for company in companies %}
+      <details class="company-row">
+        <summary>
+          <div class="company-summary">
+            <div>
+              <span class="title">{{ company.business_name }}</span>
+              {% if company.is_featured %}<span class="pill feature">featured</span>{% endif %}
+              {% if company.no_jobs_verified %}<span class="pill warn">no jobs verified</span>{% endif %}
+              {% if company.last_status and company.last_status != "ok" %}<span class="pill warn">{{ company.last_status }}</span>{% endif %}
+              <div class="sub">{{ company.city or '' }}{% if company.city and company.state %}, {% endif %}{{ company.state or '' }}</div>
+            </div>
+            <div>{{ company.active_job_count or 0 }}</div>
+            <div class="company-actions inline-actions">
+              <form class="inline" method="post" action="{{ url_for('crawl_company', company_id=company.id) }}" data-stop-propagation data-confirm="Fetch jobs for this company now?">
+                <button class="primary" type="submit">Get Jobs</button>
+              </form>
+              <form class="inline" method="post" action="{{ url_for('toggle_company_featured', company_id=company.id) }}" data-stop-propagation>
+                <button class="{% if company.is_featured %}featured{% endif %}" type="submit">Feature</button>
+              </form>
+              <form class="inline" method="post" action="{{ url_for('delete_company', company_id=company.id) }}" data-stop-propagation data-confirm="Delete this company and all related jobs?">
+                <button class="danger icon-button" type="submit" aria-label="Delete company"><i class="fa-solid fa-trash"></i></button>
+              </form>
+            </div>
+          </div>
+        </summary>
+        <div class="company-detail">
+          <form method="post" action="{{ url_for('update_company', company_id=company.id) }}">
+            <div class="form-grid">
+              <div><label>Company name</label><input name="business_name" value="{{ company.business_name }}"></div>
+              <div><label>City</label><input name="city" value="{{ company.city or '' }}"></div>
+              <div><label>State</label><input name="state" value="{{ company.state or '' }}"></div>
+              <div><label>Industry</label><input name="industry" value="{{ company.industry or '' }}"></div>
+            </div>
+            <div class="form-grid">
+              <div><label>Company URL</label><input name="seed_url" value="{{ company.seed_url }}"></div>
+              <div><label>Homepage URL</label><input name="homepage_url" value="{{ company.homepage_url or '' }}"></div>
+              <div><label>Job source URL</label><input name="jobs_url" required value="{{ company.jobs_url or '' }}"></div>
+              <div><label>Last checked</label><input readonly value="{{ company.last_checked_at or '' }}"></div>
+              <div>
+                <label>No jobs verified</label>
+                <label class="compact-field"><input type="checkbox" name="no_jobs_verified" value="1" {% if company.no_jobs_verified %}checked{% endif %}> Skip routine scans</label>
+              </div>
+              <div><label>No jobs note</label><input name="no_jobs_note" value="{{ company.no_jobs_note or '' }}" placeholder="No active jobs found on the configured job source"></div>
+            </div>
+            <p><button class="primary" type="submit">Save Company</button></p>
+          </form>
+        </div>
+      </details>
+    {% else %}
+      <div class="company-row"><div class="muted empty-row">No companies yet.</div></div>
+    {% endfor %}
+  </div>
+</section>

@@ -1,0 +1,19 @@
+{% extends "admin/layout.html" %}
+
+{% block content %}
+  {% if active_tab == 'home' %}
+    {% include "admin/_home.html" %}
+  {% elif active_tab == 'companies' %}
+    {% include "admin/_companies.html" %}
+  {% elif active_tab == 'discovery' %}
+    {% include "admin/_discovery.html" %}
+  {% elif active_tab == 'jobs' %}
+    {% include "admin/_jobs.html" %}
+  {% elif active_tab == 'tasks' %}
+    {% include "admin/_tasks.html" %}
+  {% elif active_tab == 'errors' %}
+    {% include "admin/_errors.html" %}
+  {% elif active_tab == 'settings' %}
+    {% include "admin/_settings.html" %}
+  {% endif %}
+{% endblock %}

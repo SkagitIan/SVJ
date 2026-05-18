@@ -1,0 +1,34 @@
+<section class="panel">
+  <div class="toolbar">
+    <h2>Crawler Errors</h2>
+    <form method="post" action="{{ url_for('delete_all_errors') }}" data-confirm="Delete all error notifications?">
+      <button class="danger" type="submit">Delete All Error Notifications</button>
+    </form>
+  </div>
+  <table>
+    <thead>
+      <tr><th>When</th><th>Company</th><th>Listing</th><th>Type</th><th>Message</th></tr>
+    </thead>
+    <tbody>
+      {% for error in errors %}
+        <tr>
+          <td><span class="muted">{{ error.created_label or '' }}</span></td>
+          <td>{{ error.company_name or 'Unknown' }}{% if error.job_title %}<div class="sub">{{ error.job_title }}</div>{% endif %}</td>
+          <td>{% if error.listing_url %}<a href="{{ error.listing_url }}" target="_blank" rel="noopener">Open</a><div class="sub">{{ error.listing_url }}</div>{% else %}<span class="muted">No listing URL</span>{% endif %}</td>
+          <td><span class="pill warn">{{ error.error_type }}</span></td>
+          <td>
+            <div>{{ error.short_message or error.message }}</div>
+            {% if error.has_details %}
+              <details class="error-details">
+                <summary>Details</summary>
+                <pre>{{ error.message }}</pre>
+              </details>
+            {% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="muted">No crawler errors found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>

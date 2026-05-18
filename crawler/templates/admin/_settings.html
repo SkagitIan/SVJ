@@ -1,0 +1,23 @@
+<section class="panel">
+  <div class="table-toolbar">
+    <h2>Job Refresh</h2>
+  </div>
+  <form method="post" action="{{ url_for('update_settings') }}">
+    <div class="form-grid">
+      <div>
+        <label>Refresh every</label>
+        <input type="number" min="1" max="365" name="job_refresh_days" value="{{ settings.job_refresh_days }}">
+      </div>
+      <div>
+        <label>Preferred day</label>
+        <select name="job_refresh_day">
+          {% for day in ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] %}
+            <option value="{{ day }}" {% if settings.job_refresh_day == day %}selected{% endif %}>{{ day|title }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div><label>Current schedule</label><input readonly value="Every {{ settings.job_refresh_days }} days on {{ settings.job_refresh_day|title }}"></div>
+    </div>
+    <p><button class="primary" type="submit">Save Settings</button></p>
+  </form>
+</section>

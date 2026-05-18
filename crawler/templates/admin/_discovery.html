@@ -1,0 +1,109 @@
+<div class="discovery-layout">
+  <section class="panel discovery-industries">
+    <div class="table-toolbar">
+      <h2>Industries</h2>
+    </div>
+    <table class="compact-table">
+      <thead>
+        <tr><th>Query Industry</th><th>Open</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for industry in discovery.industries %}
+          {% set count = discovery.counts.get(industry.name, {}) %}
+          <tr>
+            <td>
+              <form class="inline-edit" method="post" action="{{ url_for('update_discovery_industry', industry_id=industry.id) }}">
+                <input name="name" value="{{ industry.name }}" aria-label="Industry query name">
+                <button type="submit" title="Save industry"><i class="fa-solid fa-check"></i></button>
+              </form>
+              {% if count.get('queued', 0) %}<div class="sub">{{ count.get('queued', 0) }} queued</div>{% endif %}
+            </td>
+            <td>{{ count.get('pending', 0) or 0 }}</td>
+            <td class="actions">
+              <form class="inline" method="post" action="{{ url_for('discover_industry', industry=industry.name) }}" data-confirm="Queue Outscraper discovery for {{ industry.name }} across Skagit cities?">
+                <button class="primary icon-button" type="submit" title="Discover businesses"><i class="fa-solid fa-magnifying-glass-location"></i></button>
+              </form>
+              <form class="inline" method="post" action="{{ url_for('delete_discovery_industry', industry_id=industry.id) }}" data-confirm="Remove this industry from discovery? Existing staged businesses stay unchanged.">
+                <button class="danger icon-button" type="submit" title="Remove industry"><i class="fa-solid fa-trash"></i></button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel discovery-results">
+    <div class="table-toolbar">
+      <h2>Discovered Businesses</h2>
+      <span class="muted">{{ discovery.open_count }} open</span>
+    </div>
+    <table class="compact-table discovery-table">
+      <thead>
+        <tr><th>Business</th><th>Query</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for item in discovery.discoveries %}
+          <tr>
+            <td colspan="4">
+              <details class="company-row discovery-edit" {% if item.status in ['needs_review', 'failed_verification'] %}open{% endif %}>
+                <summary>
+                  <div class="company-summary">
+                    <div>
+                      <span class="title">{{ item.business_name }}</span>
+                      <div class="sub"><a href="{{ item.website_url }}" target="_blank" rel="noopener">{{ item.website_url }}</a></div>
+                      <div class="sub">{{ item.city or item.full_address or item.query_city or '' }}</div>
+                    </div>
+                    <div>{{ item.industry }}</div>
+                    <div>
+                      <span class="pill {% if item.status in ['failed_verification', 'needs_review'] %}warn{% elif item.status == 'imported' %}feature{% endif %}">{{ item.status }}</span>
+                      {% if item.verified_job_count %}<span class="pill feature">{{ item.verified_job_count }} jobs</span>{% endif %}
+                    </div>
+                    <button class="primary inline-flex items-center gap-2 justify-self-end rounded-md px-3 py-2 text-sm font-semibold shadow-sm" type="submit" form="verify-discovery-{{ item.id }}" data-stop-propagation {% if item.status in ['queued', 'checking'] %}disabled{% endif %}><i class="fa-solid fa-arrow-right"></i> Verify</button>
+                  </div>
+                </summary>
+
+                <div class="company-detail">
+                  {% if item.verification_message %}<div class="flash error">{{ item.verification_message }}</div>{% endif %}
+                  {% if item.job_source_url %}
+                    <div class="sub">Current job source: <a href="{{ item.job_source_url }}" target="_blank" rel="noopener">{{ item.job_source_url }}</a></div>
+                  {% endif %}
+                  <form class="rounded-md border border-slate-200 bg-slate-50 p-5" method="post" action="{{ url_for('update_discovery', discovery_id=item.id) }}">
+                    <div class="grid gap-x-5 gap-y-6 md:grid-cols-3">
+                      <div><label>Business name</label><input name="business_name" required value="{{ item.business_name }}"></div>
+                      <div><label>Industry</label><input name="industry" value="{{ item.industry }}"></div>
+                      <div><label>City</label><input name="city" value="{{ item.city or '' }}"></div>
+                      <div><label>Website URL</label><input name="website_url" required value="{{ item.website_url }}"></div>
+                      <div><label>Job source URL</label><input name="job_source_url" value="{{ item.job_source_url or '' }}" placeholder="https://example.com/careers"></div>
+                      <div><label>Phone</label><input name="phone" value="{{ item.phone or '' }}"></div>
+                      <div class="md:col-span-2"><label>Address</label><input name="full_address" value="{{ item.full_address or '' }}"></div>
+                      <div>
+                        <label>Status</label>
+                        <select name="status">
+                          <option value="discovered" {% if item.status == 'discovered' %}selected{% endif %}>Ready to verify</option>
+                          <option value="needs_review" {% if item.status == 'needs_review' %}selected{% endif %}>Needs review</option>
+                          <option value="failed_verification" {% if item.status == 'failed_verification' %}selected{% endif %}>Failed verification</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="mt-4 flex justify-end gap-2">
+                      <button class="primary inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-semibold shadow-sm" type="submit"><i class="fa-solid fa-check"></i> Save</button>
+                    </div>
+                  </form>
+                  <div class="inline-actions discovery-actions mt-3">
+                    <form class="inline" method="post" action="{{ url_for('delete_discovery', discovery_id=item.id) }}" data-confirm="Delete this staged discovery row?">
+                      <button class="danger inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-semibold" type="submit"><i class="fa-solid fa-trash"></i> Delete</button>
+                    </form>
+                  </div>
+                </div>
+              </details>
+              <form id="verify-discovery-{{ item.id }}" class="hidden" method="post" action="{{ url_for('continue_discovery', discovery_id=item.id) }}" data-confirm="Find and verify job listings for {{ item.business_name }}?"></form>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="4" class="muted">No discovered businesses need web search.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>

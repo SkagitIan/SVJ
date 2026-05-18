@@ -1,0 +1,130 @@
+<div class="stack">
+  <section class="panel">
+    <h2>Routine Tasks</h2>
+    <div class="task-grid">
+      <div class="task-card">
+        <div>
+          <div class="task-title">Fetch Jobs</div>
+          <div class="task-copy">Run every company job source now, ignoring last checked time. Results and failures show up in task history and errors.</div>
+        </div>
+        <form class="task-action" method="post" action="{{ url_for('fetch_all_jobs') }}" data-confirm="Fetch jobs for every company now?">
+          <label class="compact-field">Workers <input type="number" name="workers" min="1" max="8" value="4"></label>
+          <button class="primary" type="submit">Run</button>
+        </form>
+      </div>
+
+      <div class="task-card danger-zone">
+        <div>
+          <div class="task-title">Delete All Jobs</div>
+          <div class="task-copy">Remove every saved job listing while keeping companies and job source URLs intact.</div>
+        </div>
+        <form class="task-action" method="post" action="{{ url_for('delete_all_jobs') }}" data-confirm="Delete every job?" data-confirm-next="Final confirmation: this queues deletion of every job listing. Continue?">
+          <div class="danger-confirm">
+            <input type="checkbox" name="confirm_checked" value="yes" required aria-label="Confirm delete all jobs">
+            <input name="confirm_text" placeholder="DELETE ALL JOBS" required>
+          </div>
+          <button class="danger" type="submit">Delete</button>
+        </form>
+      </div>
+
+      <div class="task-card">
+        <div>
+          <div class="task-title">Enhance Company Data</div>
+          <div class="task-stats">
+            <span><strong>{{ company_enrichment.pending_count }}</strong> missing</span>
+            {% if company_enrichment.batch %}
+              <span>{{ company_enrichment.batch.status }}{% if company_enrichment.batch.total_count %} {{ company_enrichment.batch.completed_count }}/{{ company_enrichment.batch.total_count }}{% endif %}</span>
+            {% endif %}
+          </div>
+        </div>
+        <div class="task-action">
+          <form class="inline" method="post" action="{{ url_for('enhance_companies') }}">
+            <button class="primary" type="submit">{{ company_enrichment.action_label }}</button>
+          </form>
+          <form class="inline" method="post" action="{{ url_for('enhance_companies_test') }}">
+            <button type="submit" {% if company_enrichment.has_open_batch %}disabled{% endif %}>Test 1</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="task-card">
+        <div>
+          <div class="task-title">Enhance Job Data</div>
+          <div class="task-stats">
+            <span><strong>{{ job_enrichment.pending_count }}</strong> missing</span>
+            {% if job_enrichment.batch %}
+              <span>{{ job_enrichment.batch.status }}{% if job_enrichment.batch.total_requests %} {{ job_enrichment.batch.completed_requests }}/{{ job_enrichment.batch.total_requests }}{% endif %}</span>
+            {% endif %}
+          </div>
+        </div>
+        <form class="task-action" method="post" action="{{ url_for('enhance_jobs') }}">
+          <button class="primary" type="submit">{{ job_enrichment.action_label }}</button>
+        </form>
+      </div>
+
+      <div class="task-card wide">
+        <div>
+          <div class="task-title">Batch Import Companies</div>
+          <div class="task-copy">Paste a JSON object, list of company records, or URL strings. Imported companies become available on the Companies tab immediately.</div>
+        </div>
+        <form method="post" action="{{ url_for('import_companies') }}">
+          <textarea name="json_payload" placeholder='[
+  {
+    "business_name": "Example Co",
+    "homepage_url": "https://example.com",
+    "jobs_url": "https://example.com/careers",
+    "city": "Burlington",
+    "state": "WA"
+  },
+  "https://another-example.com/jobs"
+]'></textarea>
+          <div class="task-action"><button class="primary" type="submit">Import Companies</button></div>
+        </form>
+      </div>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Task History</h2>
+    {% if active_tasks %}
+      <div class="active-task-strip">
+        {% for task in active_tasks %}
+          <div class="active-task">
+            <div>
+              <div class="active-task-title"><span class="status-dot"></span>#{{ task.id }} {{ task.label }}{% if task.subject %}: {{ task.subject }}{% endif %}</div>
+              <div class="active-task-meta">{{ task.status }}{% if task.total_count %} | {{ task.completed_count }} of {{ task.total_count }}{% endif %} | {{ task.message or 'Working' }}</div>
+              <div class="active-task-meta">Created {{ task.created_label }}{% if task.started_label %} | Started {{ task.started_label }}{% endif %}</div>
+            </div>
+            <form method="post" action="{{ url_for('cancel_task', task_id=task.id) }}">
+              <button class="danger" type="submit">Cancel</button>
+            </form>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+    <h2>Recent Tasks</h2>
+    <div class="task-history-wrap">
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Task</th><th>Who</th><th>Status</th><th>Progress</th><th>Message</th><th>Created</th><th>Finished</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for task in tasks %}
+            <tr class="{% if task.is_active %}task-active{% endif %}">
+              <td>#{{ task.id }}</td>
+              <td>{{ task.label }}</td>
+              <td>{{ task.subject or '' }}</td>
+              <td><span class="pill {% if task.status == 'failed' %}warn{% elif task.status == 'completed' %}feature{% endif %}">{% if task.is_active %}<span class="status-dot"></span>{% endif %}{{ task.status }}</span></td>
+              <td>{{ task.completed_count }}{% if task.total_count %} / {{ task.total_count }}{% endif %}</td>
+              <td>{{ task.message or '' }}</td>
+              <td><span class="muted">{{ task.created_label }}</span></td>
+              <td><span class="muted">{{ task.finished_label }}</span></td>
+              <td>{% if task.can_cancel %}<form method="post" action="{{ url_for('cancel_task', task_id=task.id) }}"><button class="danger" type="submit">Cancel</button></form>{% endif %}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="9" class="muted">No tasks yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>

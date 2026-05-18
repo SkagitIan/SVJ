@@ -1,0 +1,43 @@
+<dialog id="add-company-dialog">
+  <form method="post" action="{{ url_for('add_company') }}">
+    <div class="modal-head">
+      <h2>Add Company</h2>
+      <button type="button" data-close-dialog>Close</button>
+    </div>
+    <div class="modal-body">
+      <label>Company name</label>
+      <input name="business_name" placeholder="Skagit Regional Health">
+      <label>Job source URL</label>
+      <input name="jobs_url" required placeholder="https://example.com/careers">
+      <label>Homepage URL</label>
+      <input name="homepage_url" placeholder="https://example.com">
+      <div class="row">
+        <div><label>City</label><input name="city" placeholder="Mount Vernon"></div>
+        <div><label>State</label><input name="state" placeholder="WA"></div>
+      </div>
+      <label>Industry</label>
+      <input name="industry" placeholder="Healthcare">
+    </div>
+    <div class="modal-actions">
+      <button type="button" data-close-dialog>Cancel</button>
+      <button class="primary" type="submit">Add Company</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="job-detail-dialog">
+  <div class="modal-head">
+    <div>
+      <h2 id="job-modal-title">Job Details</h2>
+      <div class="muted" id="job-modal-meta"></div>
+    </div>
+    <button type="button" data-close-dialog>Close</button>
+  </div>
+  <div class="modal-body">
+    <div class="modal-description" id="job-modal-description"></div>
+  </div>
+  <div class="modal-actions">
+    <a class="button" id="job-modal-apply" href="#" target="_blank" rel="noopener">Open Posting</a>
+    <button class="primary" type="button" data-close-dialog>Done</button>
+  </div>
+</dialog>
