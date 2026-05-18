@@ -1,9 +1,0 @@
-[phases.install]
-cmds = [
-  "python -m venv --copies /opt/venv",
-  ". /opt/venv/bin/activate && pip install -r requirements.txt",
-  ". /opt/venv/bin/activate && python -m playwright install chromium"
-]
-
-[start]
-cmd = "/opt/venv/bin/gunicorn app:app --bind 0.0.0.0:${PORT:-5050} --workers 1 --threads 8 --timeout 180"
