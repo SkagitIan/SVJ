@@ -1,0 +1,221 @@
+{% extends "public/layout.html" %}
+
+{% block title %}
+  {% if q %}{{ q }} Jobs{% elif city %}Jobs in {{ city }}{% elif industry %}{{ industry }} Jobs{% else %}Browse Jobs{% endif %} — SkagitValleyJobs.com
+{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto px-4 py-8">
+
+  <!-- Page header + search -->
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold text-slate-900 mb-4">
+      {% if city %}Jobs in {{ city }}
+      {% elif industry %}{{ industry }} Jobs
+      {% elif q %}Results for "{{ q }}"
+      {% else %}Browse Local Jobs
+      {% endif %}
+    </h1>
+
+    <form action="{{ url_for('public.jobs') }}" method="get" class="relative max-w-xl" id="jobs-search-form">
+      {% if view != 'list' %}<input type="hidden" name="view" value="{{ view }}">{% endif %}
+      <div class="relative">
+        <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"></i>
+        <input type="text" name="q" id="jobs-search" value="{{ q }}" placeholder="Search jobs, companies, keywords…"
+          autocomplete="off"
+          class="w-full pl-10 pr-24 py-2.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-400 focus:border-transparent bg-white">
+        <button type="submit"
+          class="absolute right-2 top-1/2 -translate-y-1/2 bg-accent hover:bg-accent-hover text-white text-sm font-semibold px-3 py-1.5 rounded-md transition-colors">
+          Search
+        </button>
+      </div>
+      <div id="jobs-autocomplete" class="autocomplete-dropdown hidden"></div>
+    </form>
+  </div>
+
+  <div class="flex flex-col lg:flex-row gap-6">
+
+    <!-- Sidebar filters -->
+    <aside class="lg:w-52 shrink-0">
+      <div class="bg-white border border-slate-200 rounded-xl p-4 space-y-5 sticky top-20">
+        <div>
+          <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">City</div>
+          <div class="space-y-1 max-h-52 overflow-y-auto">
+            <a href="{{ url_for('public.jobs', q=q, industry=industry, category=category, sort=sort, view=view) }}"
+              class="block text-sm px-2 py-1 rounded transition-colors {% if not city %}bg-red-50 text-red-700 font-semibold{% else %}text-slate-600 hover:bg-slate-50{% endif %}">
+              All cities
+            </a>
+            {% for row in city_counts_rows %}
+              <a href="{{ url_for('public.jobs', q=q, city=row.city, industry=industry, category=category, sort=sort, view=view) }}"
+                class="flex items-center justify-between text-sm px-2 py-1 rounded transition-colors {% if city == row.city %}bg-red-50 text-red-700 font-semibold{% else %}text-slate-600 hover:bg-slate-50{% endif %}">
+                <span>{{ row.city }}</span>
+                <span class="text-xs text-slate-400">{{ row.cnt }}</span>
+              </a>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div>
+          <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Industry</div>
+          <div class="space-y-1 max-h-52 overflow-y-auto">
+            <a href="{{ url_for('public.jobs', q=q, city=city, category=category, sort=sort, view=view) }}"
+              class="block text-sm px-2 py-1 rounded transition-colors {% if not industry %}bg-red-50 text-red-700 font-semibold{% else %}text-slate-600 hover:bg-slate-50{% endif %}">
+              All industries
+            </a>
+            {% for name, icon in spotlight_industries %}
+              <a href="{{ url_for('public.jobs', q=q, city=city, industry=name, category=category, sort=sort, view=view) }}"
+                class="block text-sm px-2 py-1 rounded transition-colors {% if industry == name %}bg-red-50 text-red-700 font-semibold{% else %}text-slate-600 hover:bg-slate-50{% endif %}">
+                {{ name }}
+              </a>
+            {% endfor %}
+          </div>
+        </div>
+
+        {% if cat_rows %}
+          <div>
+            <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Category</div>
+            <div class="space-y-1 max-h-48 overflow-y-auto">
+              <a href="{{ url_for('public.jobs', q=q, city=city, industry=industry, sort=sort, view=view) }}"
+                class="block text-sm px-2 py-1 rounded transition-colors {% if not category %}bg-red-50 text-red-700 font-semibold{% else %}text-slate-600 hover:bg-slate-50{% endif %}">
+                All categories
+              </a>
+              {% for row in cat_rows %}
+                <a href="{{ url_for('public.jobs', q=q, city=city, industry=industry, category=row.cat, sort=sort, view=view) }}"
+                  class="block text-sm px-2 py-1 rounded transition-colors {% if category == row.cat %}bg-red-50 text-red-700 font-semibold{% else %}text-slate-600 hover:bg-slate-50{% endif %}">
+                  {{ row.cat }}
+                </a>
+              {% endfor %}
+            </div>
+          </div>
+        {% endif %}
+
+        {% if q or city or industry or category %}
+          <a href="{{ url_for('public.jobs', view=view) }}"
+            class="block text-center text-sm text-red-600 hover:text-red-800 font-medium py-1 border border-red-200 rounded-lg hover:bg-red-50 transition-colors">
+            <i class="fa-solid fa-xmark mr-1"></i> Clear filters
+          </a>
+        {% endif %}
+      </div>
+    </aside>
+
+    <!-- Results -->
+    <div class="flex-1 min-w-0">
+
+      <!-- Toolbar -->
+      <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
+        <div class="text-sm text-slate-500">
+          {% if total == 0 %}No jobs found
+          {% elif total == 1 %}1 job
+          {% else %}<span class="font-semibold text-slate-800">{{ total }}</span> jobs{% endif %}
+          {% if q %} for <em>"{{ q }}"</em>{% endif %}
+          {% if city %} in <strong>{{ city }}</strong>{% endif %}
+        </div>
+        <div class="flex items-center gap-2">
+          <!-- Sort -->
+          <select onchange="window.location = this.value"
+            class="text-sm border border-slate-200 rounded-lg px-3 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-red-400 cursor-pointer">
+            <option value="{{ url_for('public.jobs', q=q, city=city, industry=industry, category=category, sort='newest', view=view) }}" {% if sort == 'newest' %}selected{% endif %}>Newest first</option>
+            <option value="{{ url_for('public.jobs', q=q, city=city, industry=industry, category=category, sort='alpha', view=view) }}" {% if sort == 'alpha' %}selected{% endif %}>A–Z</option>
+          </select>
+
+          <!-- View toggle -->
+          <div class="flex border border-slate-200 rounded-lg overflow-hidden">
+            <a href="{{ url_for('public.jobs', q=q, city=city, industry=industry, category=category, sort=sort, view='list', page=page) }}"
+              class="px-3 py-1.5 text-sm transition-colors {% if view == 'list' %}bg-brand text-white{% else %}bg-white text-slate-500 hover:bg-slate-50{% endif %}"
+              title="List view"><i class="fa-solid fa-list"></i>
+            </a>
+            <a href="{{ url_for('public.jobs', q=q, city=city, industry=industry, category=category, sort=sort, view='grid', page=page) }}"
+              class="px-3 py-1.5 text-sm transition-colors {% if view == 'grid' %}bg-brand text-white{% else %}bg-white text-slate-500 hover:bg-slate-50{% endif %}"
+              title="Grid view"><i class="fa-solid fa-grip"></i>
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <!-- Active filter chips -->
+      {% if q or city or industry or category %}
+        <div class="flex flex-wrap gap-2 mb-4">
+          {% if q %}
+            <span class="inline-flex items-center gap-1.5 text-sm bg-red-50 text-red-700 border border-red-200 px-3 py-1 rounded-full">
+              "{{ q }}"
+              <a href="{{ url_for('public.jobs', city=city, industry=industry, category=category, sort=sort, view=view) }}" class="hover:text-red-900 font-bold">&times;</a>
+            </span>
+          {% endif %}
+          {% if city %}
+            <span class="inline-flex items-center gap-1.5 text-sm bg-red-50 text-red-700 border border-red-200 px-3 py-1 rounded-full">
+              {{ city }}
+              <a href="{{ url_for('public.jobs', q=q, industry=industry, category=category, sort=sort, view=view) }}" class="hover:text-red-900 font-bold">&times;</a>
+            </span>
+          {% endif %}
+          {% if industry %}
+            <span class="inline-flex items-center gap-1.5 text-sm bg-red-50 text-red-700 border border-red-200 px-3 py-1 rounded-full">
+              {{ industry }}
+              <a href="{{ url_for('public.jobs', q=q, city=city, category=category, sort=sort, view=view) }}" class="hover:text-red-900 font-bold">&times;</a>
+            </span>
+          {% endif %}
+          {% if category %}
+            <span class="inline-flex items-center gap-1.5 text-sm bg-red-50 text-red-700 border border-red-200 px-3 py-1 rounded-full">
+              {{ category }}
+              <a href="{{ url_for('public.jobs', q=q, city=city, industry=industry, sort=sort, view=view) }}" class="hover:text-red-900 font-bold">&times;</a>
+            </span>
+          {% endif %}
+        </div>
+      {% endif %}
+
+      <!-- Job list -->
+      {% if job_rows %}
+        {% if view == 'grid' %}
+          <div class="grid sm:grid-cols-2 gap-4">
+            {% for job in job_rows %}
+              {% include "public/_job_card_grid.html" %}
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="space-y-3">
+            {% for job in job_rows %}
+              {% include "public/_job_card_list.html" %}
+            {% endfor %}
+          </div>
+        {% endif %}
+
+        <!-- Pagination -->
+        {% if total_pages > 1 %}
+          <nav class="flex items-center justify-center gap-1 mt-8" aria-label="Pagination">
+            {% if page > 1 %}
+              <a href="{{ url_for('public.jobs', q=q, city=city, industry=industry, category=category, sort=sort, view=view, page=page-1) }}"
+                class="px-3 py-2 text-sm border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition-colors">
+                <i class="fa-solid fa-chevron-left"></i>
+              </a>
+            {% endif %}
+            {% for p in range(1, total_pages + 1) %}
+              {% if p == page %}
+                <span class="px-3 py-2 text-sm bg-accent text-white rounded-lg font-semibold">{{ p }}</span>
+              {% elif p <= 2 or p >= total_pages - 1 or (p >= page - 2 and p <= page + 2) %}
+                <a href="{{ url_for('public.jobs', q=q, city=city, industry=industry, category=category, sort=sort, view=view, page=p) }}"
+                  class="px-3 py-2 text-sm border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition-colors">{{ p }}</a>
+              {% elif p == 3 or p == total_pages - 2 %}
+                <span class="px-2 text-slate-400">…</span>
+              {% endif %}
+            {% endfor %}
+            {% if page < total_pages %}
+              <a href="{{ url_for('public.jobs', q=q, city=city, industry=industry, category=category, sort=sort, view=view, page=page+1) }}"
+                class="px-3 py-2 text-sm border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition-colors">
+                <i class="fa-solid fa-chevron-right"></i>
+              </a>
+            {% endif %}
+          </nav>
+        {% endif %}
+
+      {% else %}
+        <div class="text-center py-16 text-slate-400">
+          <i class="fa-solid fa-magnifying-glass text-4xl mb-4 block opacity-30"></i>
+          <p class="text-lg font-medium text-slate-500 mb-1">No jobs found</p>
+          <p class="text-sm">Try different keywords or remove some filters.</p>
+          <a href="{{ url_for('public.jobs') }}" class="mt-4 inline-block text-sm text-red-600 hover:text-red-800 font-medium">Browse all jobs →</a>
+        </div>
+      {% endif %}
+
+    </div>
+  </div>
+</div>
+{% endblock %}

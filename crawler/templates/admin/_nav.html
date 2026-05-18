@@ -1,6 +1,9 @@
 <aside>
-  <div class="brand">Skagit Jobs</div>
+  <div class="brand">Skagit Jobs <span style="font-weight:400;font-size:11px;opacity:.5">admin</span></div>
   <nav>
+    <a href="{{ url_for('public.index') }}" style="font-size:11px;margin-bottom:4px;color:#9ca3af;padding:6px 12px;" target="_blank">
+      <span>View Public Site</span><i class="fa-solid fa-arrow-up-right-from-square" style="font-size:10px;"></i>
+    </a>
     <a class="{% if active_tab == 'home' %}active{% endif %}" href="{{ url_for('index', tab='home') }}">Home <span></span></a>
     <a class="{% if active_tab == 'companies' %}active{% endif %}" href="{{ url_for('index', tab='companies') }}">Companies <span>{{ stats.companies }}</span></a>
     <a class="{% if active_tab == 'discovery' %}active{% endif %}" href="{{ url_for('index', tab='discovery') }}">Discovery <span>{{ stats.discoveries }}</span></a>

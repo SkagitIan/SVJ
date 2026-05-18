@@ -1,0 +1,121 @@
+{% extends "public/layout.html" %}
+
+{% block title %}Local Employers — SkagitValleyJobs.com{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto px-4 py-8">
+
+  <div class="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+    <div>
+      <h1 class="text-2xl font-bold text-slate-900">Skagit Valley Employers</h1>
+      <p class="text-sm text-slate-500 mt-1">Companies actively hiring in Skagit County, WA.</p>
+    </div>
+
+    <!-- Sort -->
+    <select onchange="window.location = this.value"
+      class="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-red-400 cursor-pointer self-start sm:self-auto">
+      <option value="{{ url_for('public.companies', city=city, industry=industry, sort='jobs') }}" {% if sort == 'jobs' %}selected{% endif %}>Most open jobs</option>
+      <option value="{{ url_for('public.companies', city=city, industry=industry, sort='alpha') }}" {% if sort == 'alpha' %}selected{% endif %}>A–Z</option>
+    </select>
+  </div>
+
+  <div class="flex flex-col lg:flex-row gap-6">
+
+    <!-- Sidebar -->
+    <aside class="lg:w-48 shrink-0">
+      <div class="bg-white border border-slate-200 rounded-xl p-4 space-y-5 sticky top-20">
+        <div>
+          <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">City</div>
+          <div class="space-y-1 max-h-52 overflow-y-auto">
+            <a href="{{ url_for('public.companies', industry=industry, sort=sort) }}"
+              class="block text-sm px-2 py-1 rounded transition-colors {% if not city %}bg-red-50 text-red-700 font-semibold{% else %}text-slate-600 hover:bg-slate-50{% endif %}">All cities</a>
+            {% for row in city_counts_rows %}
+              <a href="{{ url_for('public.companies', city=row.city, industry=industry, sort=sort) }}"
+                class="flex items-center justify-between text-sm px-2 py-1 rounded transition-colors {% if city == row.city %}bg-red-50 text-red-700 font-semibold{% else %}text-slate-600 hover:bg-slate-50{% endif %}">
+                <span>{{ row.city }}</span>
+                <span class="text-xs text-slate-400">{{ row.cnt }}</span>
+              </a>
+            {% endfor %}
+          </div>
+        </div>
+
+        {% if industry_rows %}
+          <div>
+            <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Industry</div>
+            <div class="space-y-1 max-h-52 overflow-y-auto">
+              <a href="{{ url_for('public.companies', city=city, sort=sort) }}"
+                class="block text-sm px-2 py-1 rounded transition-colors {% if not industry %}bg-red-50 text-red-700 font-semibold{% else %}text-slate-600 hover:bg-slate-50{% endif %}">All industries</a>
+              {% for row in industry_rows %}
+                <a href="{{ url_for('public.companies', city=city, industry=row.industry, sort=sort) }}"
+                  class="flex items-center justify-between text-sm px-2 py-1 rounded transition-colors {% if industry == row.industry %}bg-red-50 text-red-700 font-semibold{% else %}text-slate-600 hover:bg-slate-50{% endif %}">
+                  <span class="truncate">{{ row.industry }}</span>
+                  <span class="text-xs text-slate-400 shrink-0 ml-1">{{ row.cnt }}</span>
+                </a>
+              {% endfor %}
+            </div>
+          </div>
+        {% endif %}
+
+        {% if city or industry %}
+          <a href="{{ url_for('public.companies', sort=sort) }}"
+            class="block text-center text-sm text-red-600 hover:text-red-800 font-medium py-1 border border-red-200 rounded-lg hover:bg-red-50 transition-colors">
+            <i class="fa-solid fa-xmark mr-1"></i> Clear filters
+          </a>
+        {% endif %}
+      </div>
+    </aside>
+
+    <!-- Company grid -->
+    <div class="flex-1 min-w-0">
+      {% if company_rows %}
+        <p class="text-sm text-slate-500 mb-4">
+          <span class="font-semibold text-slate-800">{{ company_rows|length }}</span> employer{{ 's' if company_rows|length != 1 else '' }}
+          {% if city %} in <strong>{{ city }}</strong>{% endif %}
+          {% if industry %} · <strong>{{ industry }}</strong>{% endif %}
+        </p>
+
+        <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {% for c in company_rows %}
+            {% set color = avatar_color(c.business_name) %}
+            <a href="{{ url_for('public.company', company_id=c.id) }}"
+              class="flex items-start gap-4 bg-white border border-slate-200 hover:border-red-300 hover:shadow-md rounded-xl p-4 transition-all group">
+              <div class="{{ color }} text-white w-12 h-12 rounded-xl flex items-center justify-center font-bold text-lg shrink-0">
+                {{ c.business_name[:2]|upper }}
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="font-semibold text-slate-900 group-hover:text-red-700 leading-snug truncate">{{ c.business_name }}</div>
+                {% if c.industry %}
+                  <div class="text-xs text-slate-500 truncate mt-0.5">{{ c.industry }}</div>
+                {% endif %}
+                {% if c.city %}
+                  <div class="text-xs text-slate-400 flex items-center gap-1 mt-0.5">
+                    <i class="fa-solid fa-location-dot"></i> {{ c.city }}{% if c.state %}, {{ c.state }}{% endif %}
+                  </div>
+                {% endif %}
+                <div class="mt-2">
+                  {% if c.active_job_count and c.active_job_count > 0 %}
+                    <span class="inline-block bg-red-50 text-red-700 text-xs font-semibold px-2 py-0.5 rounded-full">
+                      {{ c.active_job_count }} open job{{ 's' if c.active_job_count != 1 else '' }}
+                    </span>
+                  {% else %}
+                    <span class="text-xs text-slate-400">No current openings</span>
+                  {% endif %}
+                </div>
+              </div>
+            </a>
+          {% endfor %}
+        </div>
+
+      {% else %}
+        <div class="text-center py-16 text-slate-400">
+          <i class="fa-solid fa-building text-4xl mb-4 block opacity-30"></i>
+          <p class="text-lg font-medium text-slate-500 mb-1">No employers found</p>
+          <p class="text-sm">Try removing some filters.</p>
+          <a href="{{ url_for('public.companies') }}" class="mt-4 inline-block text-sm text-red-600 hover:text-red-800 font-medium">Browse all employers →</a>
+        </div>
+      {% endif %}
+    </div>
+
+  </div>
+</div>
+{% endblock %}
