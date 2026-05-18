@@ -837,7 +837,8 @@ def cloudflare_json_payload(seed: dict[str, Any], url: str) -> dict[str, Any]:
             "type": "json_schema",
             "schema": CLOUDFLARE_JOB_SCHEMA,
         },
-        "gotoOptions": {"waitUntil": "networkidle2", "timeout": 45000},
+        "gotoOptions": {"waitUntil": "domcontentloaded", "timeout": 45000},
+        "waitForTimeout": int(os.environ.get("CLOUDFLARE_DISCOVERY_SETTLE_MS", "5000")),
     }
 
 
