@@ -293,6 +293,28 @@
     .task-history-wrap { overflow-x: auto; }
     .task-history-wrap table { margin-top: 0; }
     .task-history-wrap thead th { border-top: 1px solid var(--line); position: static; top: auto; }
+    .task-log summary { cursor: pointer; white-space: nowrap; color: var(--accent); font-size: 12px; }
+    .task-log-list { min-width: 360px; max-width: 720px; display: grid; gap: 6px; margin-top: 8px; }
+    .task-log-event {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #f8fafc;
+      padding: 6px 8px;
+      font-size: 12px;
+    }
+    .task-log-event.task-log-error { background: #fff7ed; border-color: #fed7aa; }
+    .task-log-event summary { white-space: normal; color: var(--ink); line-height: 1.35; }
+    .task-log-event summary span { color: var(--muted); margin-right: 6px; }
+    .task-log-event summary strong { text-transform: uppercase; font-size: 10px; margin-right: 6px; }
+    .task-log-event pre {
+      margin: 8px 0 0;
+      max-height: 260px;
+      overflow: auto;
+      white-space: pre-wrap;
+      font-size: 11px;
+      line-height: 1.4;
+      color: #334155;
+    }
     .error-details { margin-top: 6px; }
     .error-details summary { cursor: pointer; color: var(--accent); font-size: 12px; font-weight: 650; }
     .error-details pre {

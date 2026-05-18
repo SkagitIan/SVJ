@@ -105,7 +105,7 @@
     <div class="task-history-wrap">
       <table>
         <thead>
-          <tr><th>ID</th><th>Task</th><th>Who</th><th>Status</th><th>Progress</th><th>Message</th><th>Created</th><th>Finished</th><th></th></tr>
+          <tr><th>ID</th><th>Task</th><th>Who</th><th>Status</th><th>Progress</th><th>Message</th><th>Log</th><th>Created</th><th>Finished</th><th></th></tr>
         </thead>
         <tbody>
           {% for task in tasks %}
@@ -116,12 +116,29 @@
               <td><span class="pill {% if task.status == 'failed' %}warn{% elif task.status == 'completed' %}feature{% endif %}">{% if task.is_active %}<span class="status-dot"></span>{% endif %}{{ task.status }}</span></td>
               <td>{{ task.completed_count }}{% if task.total_count %} / {{ task.total_count }}{% endif %}</td>
               <td>{{ task.message or '' }}</td>
+              <td>
+                {% if task.event_count %}
+                  <details class="task-log">
+                    <summary>{{ task.event_count }} event{{ 's' if task.event_count != 1 else '' }}{% if task.error_event_count %}, {{ task.error_event_count }} error{{ 's' if task.error_event_count != 1 else '' }}{% endif %}</summary>
+                    <div class="task-log-list">
+                      {% for event in task.events %}
+                        <details class="task-log-event {% if event.level == 'error' %}task-log-error{% endif %}" {% if event.level == 'error' %}open{% endif %}>
+                          <summary><span>{{ event.created_label }}</span> <strong>{{ event.level }}</strong> {{ event.short_message }}</summary>
+                          {% if event.has_details %}
+                            <pre>{{ event.message }}</pre>
+                          {% endif %}
+                        </details>
+                      {% endfor %}
+                    </div>
+                  </details>
+                {% endif %}
+              </td>
               <td><span class="muted">{{ task.created_label }}</span></td>
               <td><span class="muted">{{ task.finished_label }}</span></td>
               <td>{% if task.can_cancel %}<form method="post" action="{{ url_for('cancel_task', task_id=task.id) }}"><button class="danger" type="submit">Cancel</button></form>{% endif %}</td>
             </tr>
           {% else %}
-            <tr><td colspan="9" class="muted">No tasks yet.</td></tr>
+            <tr><td colspan="10" class="muted">No tasks yet.</td></tr>
           {% endfor %}
         </tbody>
       </table>

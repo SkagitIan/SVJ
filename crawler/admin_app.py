@@ -224,6 +224,18 @@ def ensure_admin_tables(conn: db.connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_tasks_status ON admin_tasks(status, created_at)")
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS admin_task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES admin_tasks(id),
+            level TEXT NOT NULL DEFAULT 'info',
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_task_events_task ON admin_task_events(task_id, created_at)")
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS app_settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL,
@@ -459,8 +471,21 @@ def enqueue_task(db_path: Path, task_type: str, payload: dict[str, Any] | None =
             (task_type, json.dumps(payload or {}, sort_keys=True), "Queued", timestamp),
         )
         task_id = int(cursor.fetchone()[0])
+        conn.execute(
+            "INSERT INTO admin_task_events (task_id, level, message, created_at) VALUES (?, 'info', ?, ?)",
+            (task_id, f"Queued {task_label(task_type)}", timestamp),
+        )
     start_task_worker(db_path)
     return task_id
+
+
+def append_task_event(db_path: Path, task_id: int, message: str, level: str = "info") -> None:
+    level = level if level in {"info", "warn", "error", "debug"} else "info"
+    with connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO admin_task_events (task_id, level, message, created_at) VALUES (?, ?, ?, ?)",
+            (task_id, level, message, now_iso()),
+        )
 
 
 def start_task_worker(db_path: Path) -> None:
@@ -492,6 +517,7 @@ def task_worker(db_path: Path) -> None:
                     """,
                     (str(exc), now_iso(), task["id"]),
                 )
+            append_task_event(db_path, int(task["id"]), str(exc), "error")
 
 
 def claim_next_task(db_path: Path) -> dict[str, Any] | None:
@@ -546,6 +572,10 @@ def update_task(
     params.append(task_id)
     with connect(db_path) as conn:
         conn.execute(f"UPDATE admin_tasks SET {', '.join(fields)} WHERE id = ?", params)
+        conn.execute(
+            "INSERT INTO admin_task_events (task_id, level, message, created_at) VALUES (?, 'info', ?, ?)",
+            (task_id, message, now_iso()),
+        )
 
 
 def task_cancel_requested(db_path: Path, task_id: int) -> bool:
@@ -579,6 +609,10 @@ def finish_task(db_path: Path, task_id: int, status: str, message: str) -> None:
             WHERE id = ?
             """,
             (status, message, now_iso(), task_id),
+        )
+        conn.execute(
+            "INSERT INTO admin_task_events (task_id, level, message, created_at) VALUES (?, ?, ?, ?)",
+            (task_id, "error" if status == "failed" else "info", message, now_iso()),
         )
 
 
@@ -1587,6 +1621,7 @@ async def crawl_companies_for_task(db_path: Path, task_id: int, company_ids: lis
                             company_name = row["business_name"]
                     count = await crawl_company_by_id(db_path, company_id, ai_client, ai_model)
                     message_tail = f"worker {worker_index} saved {count} jobs for {company_name}"
+                    append_task_event(db_path, task_id, message_tail)
                 except Exception as exc:
                     failures += 1
                     record_company_task_error(
@@ -1602,6 +1637,7 @@ async def crawl_companies_for_task(db_path: Path, task_id: int, company_ids: lis
                         ),
                     )
                     message_tail = f"worker {worker_index} failed {company_name}: {exc}"
+                    append_task_event(db_path, task_id, message_tail, "error")
                 finally:
                     queue.task_done()
                 async with lock:
@@ -1640,7 +1676,7 @@ def run_task(db_path: Path, task: dict[str, Any]) -> None:
             with connect(db_path) as conn:
                 company = conn.execute("SELECT business_name FROM companies WHERE id = ?", (company_id,)).fetchone()
             company_name = company["business_name"] if company else f"company {company_id}"
-            update_task(db_path, task_id, f"Fetching jobs for {company_name}")
+            update_task(db_path, task_id, f"Fetching jobs for {company_name} with Cloudflare")
             async def runner():
                 ai_client, ai_model = build_ai_client_and_model(None)
                 try:
@@ -1656,6 +1692,7 @@ def run_task(db_path: Path, task: dict[str, Any]) -> None:
         except Exception as exc:
             message = format_exception_context(exc, task_id=task_id, phase="fetch_company", company_id=company_id)
             record_company_task_error(db_path, company_id, message)
+            append_task_event(db_path, task_id, message, "error")
             finish_task(db_path, task_id, "failed", str(exc))
         return
 
@@ -1813,6 +1850,36 @@ def collect_tasks(conn: db.connection) -> list[dict[str, Any]]:
         LIMIT 100
         """
     ).fetchall()
+    task_ids = [int(row["id"]) for row in rows]
+    event_map: dict[int, list[dict[str, Any]]] = {task_id: [] for task_id in task_ids}
+    event_counts: dict[int, dict[str, int]] = {task_id: {"total": 0, "errors": 0} for task_id in task_ids}
+    if task_ids:
+        placeholders = ",".join("?" for _ in task_ids)
+        event_rows = conn.execute(
+            f"""
+            SELECT *
+            FROM admin_task_events
+            WHERE task_id IN ({placeholders})
+            ORDER BY id DESC
+            LIMIT 800
+            """,
+            task_ids,
+        ).fetchall()
+        for event in event_rows:
+            task_id = int(event["task_id"])
+            counts = event_counts.setdefault(task_id, {"total": 0, "errors": 0})
+            counts["total"] += 1
+            if event["level"] == "error":
+                counts["errors"] += 1
+            if len(event_map.setdefault(task_id, [])) < 12:
+                event_map[task_id].append(
+                    {
+                        **dict(event),
+                        "created_label": display_time(event["created_at"]),
+                        "short_message": clean_ai_value(str(event["message"]).splitlines()[0], 220) or "",
+                        "has_details": "\n" in (event["message"] or ""),
+                    }
+                )
     return [
         {
             **dict(row),
@@ -1823,6 +1890,9 @@ def collect_tasks(conn: db.connection) -> list[dict[str, Any]]:
             "created_label": display_time(row["created_at"]),
             "started_label": display_time(row["started_at"]),
             "finished_label": display_time(row["finished_at"]),
+            "events": event_map.get(int(row["id"]), []),
+            "event_count": event_counts.get(int(row["id"]), {}).get("total", 0),
+            "error_event_count": event_counts.get(int(row["id"]), {}).get("errors", 0),
         }
         for row in rows
     ]
