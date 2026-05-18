@@ -2249,6 +2249,7 @@ def verify_and_import_discovery(db_path: Path, discovery_id: int) -> str:
                 "state": "WA",
                 "industry": row["industry"],
                 "source_type": source_type_or_default(discovery.get("source_type")),
+                "extraction_provider": "cloudflare",
             }
             return await process_seed(
                 seed,
@@ -2278,6 +2279,7 @@ def verify_and_import_discovery(db_path: Path, discovery_id: int) -> str:
                     association_evidence = ?,
                     verification_status = 'error',
                     verification_message = ?,
+                    extraction_provider = 'cloudflare',
                     updated_at = ?
                 WHERE id = ?
                 """,
@@ -2296,9 +2298,18 @@ def verify_and_import_discovery(db_path: Path, discovery_id: int) -> str:
         return f"Verification failed: {exc}"
 
     verified_job_count = len(processed.get("jobs") or [])
+    provider_config = processed.get("provider_config") if isinstance(processed.get("provider_config"), dict) else {}
+    provider_config_json = json.dumps(provider_config, sort_keys=True) if provider_config else None
+    extraction_mode = clean_ai_value(processed.get("extraction_mode"), 80)
+    extraction_evidence: list[str] = list(discovery.get("evidence") or [])
+    for source in processed.get("job_sources") or []:
+        if isinstance(source, dict):
+            extraction_evidence.extend(source.get("evidence") or [])
     if verified_job_count <= 0:
-        imported_company_id = promote_discovery_company_without_jobs(db_path, processed)
+        upsert_seed_to_db(db_path, processed)
         with connect(db_path) as conn:
+            imported = conn.execute("SELECT id FROM companies WHERE seed_url = ?", (processed["seed_url"],)).fetchone()
+            imported_company_id = int(imported["id"]) if imported else None
             conn.execute(
                 """
                 UPDATE discovered_businesses
@@ -2311,6 +2322,9 @@ def verify_and_import_discovery(db_path: Path, discovery_id: int) -> str:
                     association_evidence = ?,
                     verification_status = 'no_active_jobs',
                     verification_message = ?,
+                    extraction_provider = 'cloudflare',
+                    extraction_mode = ?,
+                    provider_config = ?,
                     verified_job_count = 0,
                     imported_company_id = ?,
                     imported_at = ?,
@@ -2321,10 +2335,12 @@ def verify_and_import_discovery(db_path: Path, discovery_id: int) -> str:
                     job_source_url,
                     source_type_or_default(discovery.get("source_type")),
                     clean_ai_value(discovery.get("platform"), 120),
-                    discovery.get("confidence") or 0,
-                    json.dumps(discovery.get("evidence") or [], ensure_ascii=False),
+                    max(int(discovery.get("confidence") or 0), int(processed.get("last_job_count") or 0)),
+                    json.dumps(extraction_evidence, ensure_ascii=False),
                     clean_ai_value(discovery.get("association_evidence"), 1000),
-                    "Company was added, but the returned page did not produce verified active Skagit job listings.",
+                    "Company was added, but Cloudflare Browser Run did not extract active job listings.",
+                    extraction_mode,
+                    provider_config_json,
                     imported_company_id,
                     now_iso(),
                     now_iso(),
@@ -2349,6 +2365,9 @@ def verify_and_import_discovery(db_path: Path, discovery_id: int) -> str:
                 association_evidence = ?,
                 verification_status = 'verified',
                 verification_message = ?,
+                extraction_provider = 'cloudflare',
+                extraction_mode = ?,
+                provider_config = ?,
                 verified_job_count = ?,
                 imported_company_id = ?,
                 imported_at = ?,
@@ -2359,10 +2378,12 @@ def verify_and_import_discovery(db_path: Path, discovery_id: int) -> str:
                 job_source_url,
                 processed.get("primary_source_type") or source_type_or_default(discovery.get("source_type")),
                 clean_ai_value(discovery.get("platform"), 120),
-                discovery.get("confidence") or 0,
-                json.dumps(discovery.get("evidence") or [], ensure_ascii=False),
+                max(int(discovery.get("confidence") or 0), 85),
+                json.dumps(extraction_evidence, ensure_ascii=False),
                 clean_ai_value(discovery.get("association_evidence"), 1000),
-                f"Imported with {verified_job_count} verified active job(s).",
+                f"Imported with {verified_job_count} Cloudflare-extracted active job(s).",
+                extraction_mode,
+                provider_config_json,
                 verified_job_count,
                 imported_company_id,
                 now_iso(),

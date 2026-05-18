@@ -7,11 +7,14 @@ import json
 import os
 import re
 import sys
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import urldefrag, urljoin, urlparse
+from urllib.request import Request, urlopen
 
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig
@@ -181,6 +184,17 @@ class RenderedPage:
     html: str
 
 
+@dataclass
+class CloudflareExtractionResult:
+    mode: str
+    jobs: list[JobPosting]
+    source_url: str
+    confidence: int
+    evidence: list[str]
+    browser_ms: int | None = None
+    raw_result: dict[str, Any] | None = None
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -221,6 +235,11 @@ def is_site_root(url: str) -> bool:
 
 def clean_text(value: str | None) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
+
+
+def clean_optional_text(value: Any, limit: int = 1000) -> str | None:
+    text = clean_text(str(value)) if value is not None else ""
+    return text[:limit] if text else None
 
 
 def normalize_title(value: str | None) -> str:
@@ -726,6 +745,295 @@ def page_text_sample(html: str, limit: int = 10000) -> str:
     return clean_text(soup.get_text(" "))[:limit]
 
 
+CLOUDFLARE_JOB_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "jobs": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "job_title": {"type": "string"},
+                    "department": {"type": ["string", "null"]},
+                    "salary_info": {"type": ["string", "null"]},
+                    "location": {"type": ["string", "null"]},
+                    "description": {"type": ["string", "null"]},
+                    "application_url": {"type": ["string", "null"]},
+                    "source_url": {"type": ["string", "null"]},
+                },
+                "required": ["job_title"],
+            },
+        },
+        "evidence": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "integer"},
+    },
+    "required": ["jobs"],
+}
+
+
+def cloudflare_job_prompt(seed: dict[str, Any]) -> str:
+    return (
+        "Extract active job postings from this company's own careers page or a company-linked ATS widget. "
+        "Return only real active paid roles, not navigation links, benefits pages, talent communities, volunteer pages, "
+        "generic apply calls, LinkedIn, Indeed, Glassdoor, or unrelated job boards. "
+        "Prefer jobs in or clearly relevant to Skagit Valley, Washington when location is present. "
+        f"Company: {seed.get('business_name') or 'unknown'}. "
+        f"Homepage: {seed.get('homepage_url') or seed.get('seed_url') or 'unknown'}. "
+        "For each job include the title, apply URL, location, department, salary, and a short description when visible."
+    )
+
+
+def cloudflare_account_and_token() -> tuple[str, str]:
+    load_dotenv(Path(__file__).with_name(".env"))
+    account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID") or os.environ.get("CF_ACCOUNT_ID")
+    token = os.environ.get("CLOUDFLARE_API_TOKEN") or os.environ.get("CF_API_TOKEN") or os.environ.get("CLOUDFLARE_API_KEY")
+    if not account_id or not token:
+        missing = []
+        if not account_id:
+            missing.append("CLOUDFLARE_ACCOUNT_ID")
+        if not token:
+            missing.append("CLOUDFLARE_API_TOKEN or CLOUDFLARE_API_KEY")
+        raise RuntimeError(f"{' and '.join(missing)} required for Cloudflare Browser Run.")
+    return account_id, token
+
+
+def cloudflare_request(method: str, path: str, payload: dict[str, Any] | None = None, timeout: int = 90) -> tuple[dict[str, Any], int | None]:
+    account_id, token = cloudflare_account_and_token()
+    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/browser-rendering/{path.lstrip('/')}"
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = Request(
+        url,
+        data=body,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+            browser_ms = response.headers.get("X-Browser-Ms-Used")
+    except HTTPError as exc:
+        message = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Cloudflare Browser Run {path} failed with HTTP {exc.code}: {message[:800]}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Cloudflare Browser Run {path} failed: {exc.reason}") from exc
+    data = json.loads(raw or "{}")
+    if not data.get("success", False):
+        raise RuntimeError(f"Cloudflare Browser Run {path} failed: {data.get('errors') or data}")
+    try:
+        return data, int(browser_ms) if browser_ms else None
+    except ValueError:
+        return data, None
+
+
+def cloudflare_json_payload(seed: dict[str, Any], url: str) -> dict[str, Any]:
+    return {
+        "url": url,
+        "prompt": cloudflare_job_prompt(seed),
+        "response_format": {
+            "type": "json_schema",
+            "schema": CLOUDFLARE_JOB_SCHEMA,
+        },
+        "gotoOptions": {"waitUntil": "networkidle2", "timeout": 45000},
+    }
+
+
+def cloudflare_crawl_payload(seed: dict[str, Any], url: str) -> dict[str, Any]:
+    return {
+        "url": url,
+        "limit": int(os.environ.get("CLOUDFLARE_DISCOVERY_CRAWL_LIMIT", "6")),
+        "depth": int(os.environ.get("CLOUDFLARE_DISCOVERY_CRAWL_DEPTH", "2")),
+        "formats": ["json"],
+        "render": True,
+        "source": "links",
+        "crawlPurposes": ["search"],
+        "jsonOptions": {
+            "prompt": cloudflare_job_prompt(seed),
+            "response_format": {
+                "type": "json_schema",
+                "schema": CLOUDFLARE_JOB_SCHEMA,
+            },
+        },
+        "options": {
+            "includeExternalLinks": True,
+            "includeSubdomains": True,
+            "includePatterns": ["**/career**", "**/job**", "**/employment**", "**/opening**", "**/position**"],
+            "excludePatterns": ["**/privacy**", "**/terms**", "**/blog**", "**/news**"],
+        },
+    }
+
+
+def find_cloudflare_job_payloads(value: Any) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        jobs = value.get("jobs")
+        if isinstance(jobs, list):
+            payloads.append(value)
+        for child in value.values():
+            payloads.extend(find_cloudflare_job_payloads(child))
+    elif isinstance(value, list):
+        for item in value:
+            payloads.extend(find_cloudflare_job_payloads(item))
+    return payloads
+
+
+def job_postings_from_cloudflare_payload(payload: dict[str, Any], default_url: str, source_type: str) -> list[JobPosting]:
+    raw_jobs = payload.get("jobs")
+    if not isinstance(raw_jobs, list):
+        return []
+    jobs: list[JobPosting] = []
+    seen: set[tuple[str, str | None]] = set()
+    for item in raw_jobs:
+        if not isinstance(item, dict):
+            continue
+        title = clean_text(str(item.get("job_title") or item.get("title") or ""))
+        if not title or is_generic_job_cta(title) or not is_probable_job_title(title):
+            continue
+        source_url = normalize_url(str(item.get("source_url") or ""), default_url) or default_url
+        application_url = normalize_url(str(item.get("application_url") or item.get("apply_url") or ""), source_url) or source_url
+        key = (normalize_title(title), application_url)
+        if key in seen:
+            continue
+        seen.add(key)
+        jobs.append(
+            JobPosting(
+                job_title=title[:120],
+                department=clean_optional_text(item.get("department"), 240),
+                salary_info=clean_optional_text(item.get("salary_info") or item.get("salary"), 240),
+                location=clean_optional_text(item.get("location"), 240),
+                description=clean_optional_text(item.get("description"), 12000),
+                application_url=application_url,
+                source_url=source_url,
+                source_type=source_type,
+                raw={"cloudflare_extracted": True, "cloudflare_job": item},
+            )
+        )
+    return jobs
+
+
+def normalize_cloudflare_result(mode: str, result: dict[str, Any], source_url: str, source_type: str, browser_ms: int | None) -> CloudflareExtractionResult:
+    payloads = find_cloudflare_job_payloads(result.get("result"))
+    jobs: list[JobPosting] = []
+    evidence: list[str] = []
+    confidence = 0
+    for payload in payloads:
+        jobs.extend(job_postings_from_cloudflare_payload(payload, source_url, source_type))
+        if isinstance(payload.get("evidence"), list):
+            evidence.extend(clean_text(str(item)) for item in payload["evidence"] if clean_text(str(item)))
+        try:
+            confidence = max(confidence, int(payload.get("confidence") or 0))
+        except (TypeError, ValueError):
+            pass
+    unique_jobs: list[JobPosting] = []
+    seen: set[tuple[str, str | None]] = set()
+    for job in jobs:
+        key = (normalize_title(job.job_title), job.application_url)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_jobs.append(job)
+    if unique_jobs and not evidence:
+        evidence.append(f"Cloudflare Browser Run {mode} extracted {len(unique_jobs)} active job posting(s).")
+    if unique_jobs and confidence <= 0:
+        confidence = 85
+    return CloudflareExtractionResult(
+        mode=mode,
+        jobs=unique_jobs,
+        source_url=source_url,
+        confidence=confidence,
+        evidence=evidence[:20],
+        browser_ms=browser_ms,
+        raw_result=result.get("result") if isinstance(result.get("result"), dict) else {"result": result.get("result")},
+    )
+
+
+def cloudflare_extract_jobs(seed: dict[str, Any]) -> CloudflareExtractionResult:
+    source_url = normalize_url(seed.get("jobs_url") or seed.get("job_source_url") or seed.get("seed_url") or "")
+    if not source_url:
+        raise ValueError("Cloudflare extraction requires a jobs_url.")
+    source_type = source_type_from_seed(seed)
+    json_result, json_browser_ms = cloudflare_request("POST", "json", cloudflare_json_payload(seed, source_url))
+    extracted = normalize_cloudflare_result("json", json_result, source_url, source_type, json_browser_ms)
+    if extracted.jobs:
+        return extracted
+
+    crawl_result, crawl_browser_ms = cloudflare_request("POST", "crawl", cloudflare_crawl_payload(seed, source_url), timeout=60)
+    job_id = crawl_result.get("result")
+    if not isinstance(job_id, str) or not job_id:
+        raise RuntimeError(f"Cloudflare crawl did not return a job id: {crawl_result}")
+    max_attempts = int(os.environ.get("CLOUDFLARE_DISCOVERY_CRAWL_ATTEMPTS", "24"))
+    delay_seconds = float(os.environ.get("CLOUDFLARE_DISCOVERY_CRAWL_DELAY", "2.5"))
+    final_result: dict[str, Any] | None = None
+    poll_browser_ms = 0
+    for _ in range(max_attempts):
+        time.sleep(delay_seconds)
+        poll_result, browser_ms = cloudflare_request("GET", f"crawl/{job_id}?limit=20", timeout=60)
+        if browser_ms:
+            poll_browser_ms += browser_ms
+        status = poll_result.get("result", {}).get("status") if isinstance(poll_result.get("result"), dict) else None
+        if status and status != "running":
+            final_result = poll_result
+            break
+    if final_result is None:
+        raise RuntimeError("Cloudflare crawl did not complete before the local timeout.")
+    status = final_result.get("result", {}).get("status") if isinstance(final_result.get("result"), dict) else None
+    if status != "completed":
+        raise RuntimeError(f"Cloudflare crawl ended with status {status}.")
+    return normalize_cloudflare_result("crawl", final_result, source_url, source_type, (crawl_browser_ms or 0) + poll_browser_ms)
+
+
+async def process_seed_with_cloudflare(seed: dict[str, Any]) -> dict[str, Any]:
+    extracted = await asyncio.to_thread(cloudflare_extract_jobs, seed)
+    timestamp = now_iso()
+    jobs = [asdict(job) for job in extracted.jobs]
+    seed.update(
+        {
+            "seed_url": normalize_url(seed.get("seed_url") or seed.get("homepage_url") or seed.get("jobs_url")),
+            "homepage_url": normalize_url(seed.get("homepage_url") or seed.get("seed_url") or seed.get("jobs_url")),
+            "jobs_url": extracted.source_url,
+            "jobs": jobs,
+            "job_sources": [
+                {
+                    "url": extracted.source_url,
+                    "source_type": source_type_from_seed(seed),
+                    "confidence": extracted.confidence,
+                    "job_count": len(jobs),
+                    "evidence": extracted.evidence,
+                    "extraction_provider": "cloudflare",
+                    "extraction_mode": extracted.mode,
+                    "provider_config": {
+                        "browser_ms": extracted.browser_ms,
+                    },
+                }
+            ],
+            "primary_source_type": source_type_from_seed(seed),
+            "last_status": "ok",
+            "last_checked_at": timestamp,
+            "error": None,
+            "extraction_provider": "cloudflare",
+            "extraction_mode": extracted.mode,
+            "provider_config": {
+                "browser_ms": extracted.browser_ms,
+                "raw_result_sample": extracted.raw_result,
+            },
+            "last_job_count": len(jobs),
+            "no_jobs_verified": len(jobs) == 0,
+            "no_jobs_verified_at": timestamp if len(jobs) == 0 else None,
+            "no_jobs_note": "Cloudflare Browser Run found the careers page but extracted no active job listings." if len(jobs) == 0 else None,
+            "debug": {
+                "provider": "cloudflare",
+                "mode": extracted.mode,
+                "browser_ms": extracted.browser_ms,
+                "verified_job_count": len(jobs),
+            },
+        }
+    )
+    return seed
+
+
 async def ai_extract_jobs_from_page(
     client: AsyncOpenAI,
     model: str,
@@ -1190,6 +1498,10 @@ def init_db(db_path: Path) -> None:
                 homepage_url TEXT,
                 jobs_url TEXT,
                 source_type TEXT NOT NULL DEFAULT 'general_jobs',
+                extraction_provider TEXT,
+                extraction_mode TEXT,
+                provider_config TEXT,
+                last_job_count INTEGER NOT NULL DEFAULT 0,
                 last_checked_at TEXT,
                 last_status TEXT,
                 error TEXT,
@@ -1203,6 +1515,10 @@ def init_db(db_path: Path) -> None:
             "industry": "TEXT",
             "homepage_url": "TEXT",
             "source_type": "TEXT NOT NULL DEFAULT 'general_jobs'",
+            "extraction_provider": "TEXT",
+            "extraction_mode": "TEXT",
+            "provider_config": "TEXT",
+            "last_job_count": "INTEGER NOT NULL DEFAULT 0",
             "is_featured": "INTEGER NOT NULL DEFAULT 0",
             "summary": "TEXT",
             "hiring_summary": "TEXT",
@@ -1268,6 +1584,9 @@ def init_db(db_path: Path) -> None:
                 confidence INTEGER NOT NULL DEFAULT 0,
                 active_job_count INTEGER NOT NULL DEFAULT 0,
                 evidence_json TEXT,
+                extraction_provider TEXT,
+                extraction_mode TEXT,
+                provider_config TEXT,
                 last_checked_at TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -1275,6 +1594,14 @@ def init_db(db_path: Path) -> None:
             )
             """
         )
+        job_source_columns = {row[1] for row in conn.execute("PRAGMA table_info(job_sources)")}
+        for column, definition in {
+            "extraction_provider": "TEXT",
+            "extraction_mode": "TEXT",
+            "provider_config": "TEXT",
+        }.items():
+            if column not in job_source_columns:
+                conn.execute(f"ALTER TABLE job_sources ADD COLUMN {column} {definition}")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS job_postings (
@@ -1336,6 +1663,9 @@ def init_db(db_path: Path) -> None:
                 association_evidence TEXT,
                 verification_status TEXT,
                 verification_message TEXT,
+                extraction_provider TEXT,
+                extraction_mode TEXT,
+                provider_config TEXT,
                 verified_job_count INTEGER NOT NULL DEFAULT 0,
                 imported_company_id INTEGER REFERENCES companies(id),
                 discovered_at TEXT NOT NULL,
@@ -1363,6 +1693,9 @@ def init_db(db_path: Path) -> None:
             "association_evidence": "TEXT",
             "verification_status": "TEXT",
             "verification_message": "TEXT",
+            "extraction_provider": "TEXT",
+            "extraction_mode": "TEXT",
+            "provider_config": "TEXT",
             "verified_job_count": "INTEGER NOT NULL DEFAULT 0",
             "imported_company_id": "INTEGER REFERENCES companies(id)",
             "continued_at": "TEXT",
@@ -1582,9 +1915,10 @@ def upsert_seed_to_db(db_path: Path, seed: dict[str, Any]) -> None:
             """
             INSERT INTO companies (
                 seed_url, business_name, city, state, location, industry, homepage_url, jobs_url, source_type,
+                extraction_provider, extraction_mode, provider_config, last_job_count,
                 last_checked_at, last_status, error, no_jobs_verified, no_jobs_verified_at, no_jobs_note, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(seed_url) DO UPDATE SET
                 business_name=excluded.business_name,
                 city=excluded.city,
@@ -1594,6 +1928,10 @@ def upsert_seed_to_db(db_path: Path, seed: dict[str, Any]) -> None:
                 homepage_url=excluded.homepage_url,
                 jobs_url=excluded.jobs_url,
                 source_type=excluded.source_type,
+                extraction_provider=excluded.extraction_provider,
+                extraction_mode=excluded.extraction_mode,
+                provider_config=excluded.provider_config,
+                last_job_count=excluded.last_job_count,
                 last_checked_at=excluded.last_checked_at,
                 last_status=excluded.last_status,
                 error=excluded.error,
@@ -1613,6 +1951,10 @@ def upsert_seed_to_db(db_path: Path, seed: dict[str, Any]) -> None:
                 seed.get("homepage_url"),
                 seed.get("jobs_url"),
                 seed.get("primary_source_type") or source_type_from_seed(seed),
+                seed.get("extraction_provider"),
+                seed.get("extraction_mode"),
+                json.dumps(seed.get("provider_config"), sort_keys=True) if isinstance(seed.get("provider_config"), dict) else seed.get("provider_config"),
+                int(seed.get("last_job_count") if seed.get("last_job_count") is not None else job_count),
                 seed.get("last_checked_at"),
                 seed.get("last_status"),
                 seed.get("error"),
@@ -1646,14 +1988,18 @@ def upsert_seed_to_db(db_path: Path, seed: dict[str, Any]) -> None:
                 """
                 INSERT INTO job_sources (
                     company_id, source_url, source_type, confidence,
-                    active_job_count, evidence_json, last_checked_at, created_at, updated_at
+                    active_job_count, evidence_json, extraction_provider, extraction_mode, provider_config,
+                    last_checked_at, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(company_id, source_url) DO UPDATE SET
                     source_type=excluded.source_type,
                     confidence=excluded.confidence,
                     active_job_count=excluded.active_job_count,
                     evidence_json=excluded.evidence_json,
+                    extraction_provider=excluded.extraction_provider,
+                    extraction_mode=excluded.extraction_mode,
+                    provider_config=excluded.provider_config,
                     last_checked_at=excluded.last_checked_at,
                     updated_at=excluded.updated_at
                 """,
@@ -1664,6 +2010,9 @@ def upsert_seed_to_db(db_path: Path, seed: dict[str, Any]) -> None:
                     int(source.get("confidence") or 0),
                     int(source.get("job_count") or 0),
                     json.dumps(source.get("evidence") or [], sort_keys=True),
+                    source.get("extraction_provider") or seed.get("extraction_provider"),
+                    source.get("extraction_mode") or seed.get("extraction_mode"),
+                    json.dumps(source.get("provider_config"), sort_keys=True) if isinstance(source.get("provider_config"), dict) else source.get("provider_config"),
                     seed.get("last_checked_at") or timestamp,
                     timestamp,
                     timestamp,
@@ -1836,6 +2185,9 @@ async def process_seed(
     ai_client: AsyncOpenAI,
     ai_model: str,
 ) -> dict[str, Any]:
+    if str(seed.get("extraction_provider") or "").lower() == "cloudflare":
+        return await process_seed_with_cloudflare(seed)
+
     seed_url = normalize_url(seed.get("seed_url") or seed.get("homepage_url") or seed.get("url"))
     if not seed_url:
         raise ValueError(f"missing seed_url in seed: {seed}")
@@ -2077,6 +2429,9 @@ def import_seed_items_to_db(db_path: Path, raw: Any) -> int:
 def company_row_to_seed(row: db.Row) -> dict[str, Any]:
     jobs_url = row["jobs_url"]
     source_type = row["source_type"] or "general_jobs"
+    extraction_provider = row["extraction_provider"] if "extraction_provider" in row.keys() else None
+    extraction_mode = row["extraction_mode"] if "extraction_mode" in row.keys() else None
+    provider_config = row["provider_config"] if "provider_config" in row.keys() else None
     return {
         "company_id": row["id"],
         "business_name": row["business_name"],
@@ -2088,6 +2443,9 @@ def company_row_to_seed(row: db.Row) -> dict[str, Any]:
         "seed_url": row["seed_url"],
         "jobs_url": jobs_url,
         "source_type": source_type,
+        "extraction_provider": extraction_provider,
+        "extraction_mode": extraction_mode,
+        "provider_config": provider_config,
         "job_sources": [{"url": jobs_url, "source_type": source_type, "confidence": 100, "reason": "company table source"}],
     }
 
