@@ -11,11 +11,13 @@
       "commands": [
         "PLAYWRIGHT_BROWSERS_PATH=/app/.cache/ms-playwright python -m playwright install chromium"
       ],
-      "deployOutputs": {
-        "include": [
-          ".cache/ms-playwright"
-        ]
-      }
+      "deployOutputs": [
+        {
+          "include": [
+            ".cache/ms-playwright"
+          ]
+        }
+      ]
     }
   },
   "deploy": {
