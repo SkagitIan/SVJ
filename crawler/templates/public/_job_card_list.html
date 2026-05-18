@@ -1,0 +1,71 @@
+{# List-view job row. Expects: job, time_ago, avatar_color, parse_json_list, week_ago #}
+{% set color = avatar_color(job.business_name) %}
+{% set is_new = job.is_new or (job.first_seen_at and job.first_seen_at >= week_ago) %}
+{% set summary = job.ai_summary or (job.description[:220] ~ '…' if job.description and job.description|length > 220 else job.description) %}
+{% set pay = job.ai_estimated_pay_range or job.salary_info %}
+{% set tags = parse_json_list(job.ai_worker_tags) %}
+
+<div class="flex items-start gap-3 bg-white border border-slate-200 hover:border-red-300 hover:shadow-sm rounded-xl p-4 transition-all group">
+  <!-- Avatar -->
+  <div class="{{ color }} text-white w-10 h-10 rounded-lg flex items-center justify-center font-bold text-sm shrink-0 mt-0.5">
+    {{ job.business_name[:2]|upper }}
+  </div>
+
+  <!-- Content -->
+  <div class="flex-1 min-w-0">
+    <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+      <a href="{{ job.application_url or '#' }}" target="_blank" rel="noopener"
+        class="font-semibold text-slate-900 group-hover:text-red-700 leading-snug hover:underline">
+        {{ job.job_title }}
+      </a>
+      {% if is_new %}
+        <span class="inline-block bg-red-100 text-red-700 text-xs font-semibold px-2 py-0.5 rounded-full">New</span>
+      {% endif %}
+      {% if job.is_featured %}
+        <span class="inline-block bg-amber-100 text-amber-700 text-xs font-semibold px-2 py-0.5 rounded-full">Featured</span>
+      {% endif %}
+    </div>
+
+    <div class="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-slate-500 mt-0.5">
+      <a href="{{ url_for('public.company', company_id=job.company_db_id or job.company_id) }}"
+        class="font-medium text-slate-700 hover:text-red-700 transition-colors">
+        {{ job.business_name }}
+      </a>
+      {% if job.company_city or job.location %}
+        <span class="flex items-center gap-1">
+          <i class="fa-solid fa-location-dot text-slate-300 text-xs"></i>
+          {{ job.company_city or job.location }}
+        </span>
+      {% endif %}
+      {% if job.ai_job_category or job.department %}
+        <span class="text-slate-400">{{ job.ai_job_category or job.department }}</span>
+      {% endif %}
+    </div>
+
+    {% if summary %}
+      <p class="text-sm text-slate-500 mt-1.5 line-clamp-2 leading-relaxed">{{ summary }}</p>
+    {% endif %}
+
+    {% if tags %}
+      <div class="flex flex-wrap gap-1.5 mt-2">
+        {% for tag in tags[:5] %}
+          <span class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">{{ tag }}</span>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </div>
+
+  <!-- Right: pay + time + apply -->
+  <div class="shrink-0 text-right hidden sm:flex flex-col items-end gap-1.5 min-w-[110px]">
+    {% if pay %}
+      <span class="text-sm font-semibold text-emerald-700">{{ pay }}</span>
+    {% endif %}
+    <span class="text-xs text-slate-400">{{ time_ago(job.first_seen_at) }}</span>
+    {% if job.application_url %}
+      <a href="{{ job.application_url }}" target="_blank" rel="noopener"
+        class="mt-1 text-xs font-semibold bg-accent hover:bg-accent-hover text-white px-3 py-1.5 rounded-lg transition-colors">
+        Apply →
+      </a>
+    {% endif %}
+  </div>
+</div>

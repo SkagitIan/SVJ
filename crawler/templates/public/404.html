@@ -1,0 +1,19 @@
+{% extends "public/layout.html" %}
+{% block title %}Page Not Found — SkagitValleyJobs.com{% endblock %}
+{% block content %}
+<div class="max-w-lg mx-auto px-4 py-24 text-center">
+  <div class="text-6xl font-black text-slate-200 mb-4">404</div>
+  <h1 class="text-2xl font-bold text-slate-800 mb-2">Page not found</h1>
+  <p class="text-slate-500 mb-8">That page doesn't exist or may have been removed.</p>
+  <div class="flex flex-col sm:flex-row gap-3 justify-center">
+    <a href="{{ url_for('public.jobs') }}"
+      class="bg-accent hover:bg-accent-hover text-white font-semibold px-5 py-2.5 rounded-lg transition-colors text-sm">
+      Browse Jobs
+    </a>
+    <a href="{{ url_for('public.index') }}"
+      class="border border-slate-200 text-slate-600 hover:bg-slate-50 font-semibold px-5 py-2.5 rounded-lg transition-colors text-sm">
+      Go Home
+    </a>
+  </div>
+</div>
+{% endblock %}

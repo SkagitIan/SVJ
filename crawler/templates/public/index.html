@@ -1,0 +1,171 @@
+{% extends "public/layout.html" %}
+
+{% block title %}SkagitValleyJobs.com — Local Jobs in Skagit Valley, WA{% endblock %}
+
+{% block content %}
+
+<!-- Hero -->
+<section class="bg-brand text-white py-14 px-4">
+  <div class="max-w-3xl mx-auto text-center">
+    <h1 class="text-3xl sm:text-4xl font-bold mb-2 tracking-tight">
+      Local Jobs in <span class="text-red-400">Skagit Valley</span>
+    </h1>
+    <p class="text-slate-300 mb-8 text-base sm:text-lg">
+      Real jobs from real Skagit County employers — updated regularly.
+    </p>
+
+    <!-- Search bar -->
+    <form action="{{ url_for('public.jobs') }}" method="get" class="relative max-w-xl mx-auto" id="hero-search-form">
+      <div class="relative">
+        <i class="fa-solid fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"></i>
+        <input
+          type="text"
+          name="q"
+          id="hero-search"
+          placeholder="Job title, company, or keyword…"
+          autocomplete="off"
+          class="w-full pl-11 pr-28 py-3.5 rounded-lg text-slate-900 text-base focus:outline-none focus:ring-2 focus:ring-red-400 shadow-lg"
+        >
+        <button type="submit"
+          class="absolute right-2 top-1/2 -translate-y-1/2 bg-accent hover:bg-accent-hover text-white font-semibold px-4 py-2 rounded-md text-sm transition-colors">
+          Search
+        </button>
+      </div>
+      <div id="hero-autocomplete" class="autocomplete-dropdown hidden"></div>
+    </form>
+
+    {% if stats %}
+      <p class="mt-4 text-slate-400 text-sm">
+        <span class="text-white font-semibold">{{ stats.job_count }}</span> active jobs from
+        <span class="text-white font-semibold">{{ stats.company_count }}</span> local employers
+      </p>
+    {% endif %}
+
+    <div class="mt-5 flex flex-wrap gap-2 justify-center">
+      <button data-open-subscribe class="inline-flex items-center gap-2 text-sm border border-slate-600 hover:border-slate-400 text-slate-300 hover:text-white px-4 py-2 rounded-full transition-colors">
+        <i class="fa-solid fa-bell text-accent"></i> Get Job Alerts
+      </button>
+    </div>
+  </div>
+</section>
+
+<!-- City filter chips -->
+<section class="bg-white border-b border-slate-200 py-4 px-4">
+  <div class="max-w-6xl mx-auto">
+    <div class="flex flex-wrap gap-2 items-center">
+      <span class="text-xs font-semibold text-slate-500 uppercase tracking-wide mr-1 shrink-0">By City:</span>
+      {% for city in skagit_cities %}
+        {% set cnt = city_counts.get(city, 0) %}
+        {% if cnt > 0 %}
+          <a href="{{ url_for('public.jobs', city=city) }}"
+            class="inline-flex items-center gap-1.5 text-sm bg-slate-100 hover:bg-red-50 hover:text-red-700 border border-slate-200 hover:border-red-200 text-slate-700 px-3 py-1.5 rounded-full transition-colors">
+            {{ city }}
+            <span class="text-xs bg-white border border-slate-200 text-slate-500 px-1.5 py-0.5 rounded-full">{{ cnt }}</span>
+          </a>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<!-- New this week -->
+{% if new_jobs %}
+<section class="py-10 px-4">
+  <div class="max-w-6xl mx-auto">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-xl font-bold text-slate-900">
+        <span class="inline-block w-2.5 h-2.5 rounded-full bg-accent mr-2 animate-pulse"></span>
+        New This Week
+      </h2>
+      <a href="{{ url_for('public.jobs', sort='newest') }}" class="text-sm text-red-600 hover:text-red-800 font-medium">View all →</a>
+    </div>
+    <div class="flex gap-4 overflow-x-auto pb-3 snap-x snap-mandatory -mx-1 px-1">
+      {% for job in new_jobs %}
+        {% set color = avatar_color(job.business_name) %}
+        <a href="{{ job.application_url or '#' }}" target="_blank" rel="noopener"
+          class="snap-start shrink-0 w-64 bg-white border border-slate-200 hover:border-red-300 hover:shadow-md rounded-xl p-4 transition-all group">
+          <div class="flex items-start gap-3 mb-3">
+            <div class="{{ color }} text-white w-9 h-9 rounded-lg flex items-center justify-center font-bold text-sm shrink-0">
+              {{ job.business_name[:2]|upper }}
+            </div>
+            <div class="min-w-0">
+              <div class="font-semibold text-sm text-slate-900 group-hover:text-red-700 leading-tight truncate">{{ job.job_title }}</div>
+              <div class="text-xs text-slate-500 truncate">{{ job.business_name }}</div>
+            </div>
+          </div>
+          <div class="text-xs text-slate-500 flex items-center gap-1 mb-1">
+            <i class="fa-solid fa-location-dot text-slate-400 w-3"></i>
+            {{ job.company_city or job.location or 'Skagit Valley' }}
+          </div>
+          {% if job.ai_estimated_pay_range or job.salary_info %}
+            <div class="text-xs text-emerald-700 font-medium">
+              {{ job.ai_estimated_pay_range or job.salary_info }}
+            </div>
+          {% endif %}
+          <div class="mt-2 text-xs text-slate-400">{{ time_ago(job.first_seen_at) }}</div>
+        </a>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% endif %}
+
+<!-- Industry spotlight -->
+<section class="bg-slate-100 py-10 px-4">
+  <div class="max-w-6xl mx-auto">
+    <h2 class="text-xl font-bold text-slate-900 mb-1">Industries in Skagit Valley</h2>
+    <p class="text-sm text-slate-500 mb-6">Skagit County is home to healthcare, agriculture, manufacturing, and more.</p>
+    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+      {% for name, icon in spotlight_industries %}
+        {% set cnt = industry_counts.get(name, 0) %}
+        <a href="{{ url_for('public.jobs', industry=name) }}"
+          class="bg-white border border-slate-200 hover:border-red-300 hover:shadow-md rounded-xl p-4 text-center transition-all group">
+          <div class="text-2xl text-slate-400 group-hover:text-accent mb-2 transition-colors">
+            <i class="{{ icon }}"></i>
+          </div>
+          <div class="font-semibold text-sm text-slate-800 group-hover:text-red-700 leading-tight">{{ name }}</div>
+          <div class="text-xs text-slate-400 mt-1">{{ cnt }} job{{ 's' if cnt != 1 else '' }}</div>
+        </a>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<!-- Featured employers -->
+{% if featured_companies %}
+<section class="py-10 px-4">
+  <div class="max-w-6xl mx-auto">
+    <h2 class="text-xl font-bold text-slate-900 mb-5">Featured Employers</h2>
+    <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      {% for c in featured_companies %}
+        {% set color = avatar_color(c.business_name) %}
+        <a href="{{ url_for('public.company', company_id=c.id) }}"
+          class="flex items-center gap-4 bg-white border border-slate-200 hover:border-red-300 hover:shadow-md rounded-xl p-4 transition-all group">
+          <div class="{{ color }} text-white w-12 h-12 rounded-xl flex items-center justify-center font-bold text-lg shrink-0">
+            {{ c.business_name[:2]|upper }}
+          </div>
+          <div class="min-w-0">
+            <div class="font-semibold text-slate-900 group-hover:text-red-700 leading-snug truncate">{{ c.business_name }}</div>
+            <div class="text-xs text-slate-500 truncate">{{ c.industry or '' }}{% if c.industry and c.city %} · {% endif %}{{ c.city or '' }}</div>
+            <div class="text-xs text-slate-400 mt-0.5">{{ c.active_job_count or 0 }} open position{{ 's' if (c.active_job_count or 0) != 1 else '' }}</div>
+          </div>
+        </a>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% endif %}
+
+<!-- CTA banner -->
+<section class="bg-brand py-10 px-4">
+  <div class="max-w-2xl mx-auto text-center text-white">
+    <h2 class="text-2xl font-bold mb-2">Stay ahead of new openings</h2>
+    <p class="text-slate-300 mb-6 text-sm">Get email alerts when local employers post new jobs matching your interests.</p>
+    <button data-open-subscribe
+      class="bg-accent hover:bg-accent-hover text-white font-semibold px-6 py-3 rounded-lg transition-colors inline-flex items-center gap-2">
+      <i class="fa-solid fa-bell"></i> Set Up Job Alerts
+    </button>
+  </div>
+</section>
+
+{% endblock %}
