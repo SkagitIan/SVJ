@@ -9,16 +9,17 @@
         }
       ],
       "commands": [
-        "python -m playwright install --with-deps chromium"
+        "PLAYWRIGHT_BROWSERS_PATH=/app/.cache/ms-playwright python -m playwright install chromium"
+      ],
+      "deployOutputs": [
+        ".cache/ms-playwright"
       ]
     }
   },
   "deploy": {
-    "inputs": [
-      {
-        "step": "playwright"
-      }
-    ],
+    "variables": {
+      "PLAYWRIGHT_BROWSERS_PATH": "/app/.cache/ms-playwright"
+    },
     "startCommand": "gunicorn app:app --bind 0.0.0.0:${PORT:-5050} --workers 1 --threads 8 --timeout 180"
   }
 }
