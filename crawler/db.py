@@ -25,9 +25,9 @@ IntegrityError = psycopg.IntegrityError
 
 
 def database_url() -> str:
-    url = os.environ.get("DATABASE_PUBLIC_URL")
+    url = os.environ.get("DATABASE_PUBLIC_URL") or os.environ.get("DATABASE_URL")
     if not url:
-        raise RuntimeError("DATABASE_PUBLIC_URL is required in crawler/.env.")
+        raise RuntimeError("DATABASE_PUBLIC_URL or DATABASE_URL is required in crawler/.env.")
     return url
 
 

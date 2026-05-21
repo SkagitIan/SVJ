@@ -4,12 +4,23 @@
     <a href="{{ url_for('public.index') }}" style="font-size:11px;margin-bottom:4px;color:#9ca3af;padding:6px 12px;" target="_blank">
       <span>View Public Site</span><i class="fa-solid fa-arrow-up-right-from-square" style="font-size:10px;"></i>
     </a>
-    <a class="{% if active_tab == 'home' %}active{% endif %}" href="{{ url_for('index', tab='home') }}">Home <span></span></a>
-    <a class="{% if active_tab == 'companies' %}active{% endif %}" href="{{ url_for('index', tab='companies') }}">Companies <span>{{ stats.companies }}</span></a>
-    <a class="{% if active_tab == 'discovery' %}active{% endif %}" href="{{ url_for('index', tab='discovery') }}">Discovery <span>{{ stats.discoveries }}</span></a>
+    <a class="{% if active_tab == 'dashboard' %}active{% endif %}" href="{{ url_for('index', tab='dashboard') }}">Dashboard <span>{{ stats.active_pipeline_runs }}</span></a>
+    <a class="{% if active_tab == 'employers' %}active{% endif %}" href="{{ url_for('index', tab='employers') }}">Employers <span>{{ stats.companies }}</span></a>
     <a class="{% if active_tab == 'jobs' %}active{% endif %}" href="{{ url_for('index', tab='jobs') }}">Jobs <span>{{ stats.active_jobs }}</span></a>
-    <a class="{% if active_tab == 'tasks' %}active{% endif %}" href="{{ url_for('index', tab='tasks') }}">Tasks <span>{{ stats.active_tasks }}</span></a>
-    <a class="{% if active_tab == 'errors' %}active{% endif %}" href="{{ url_for('index', tab='errors') }}">Errors <span>{{ stats.errors }}</span></a>
-    <a class="{% if active_tab == 'settings' %}active{% endif %}" href="{{ url_for('index', tab='settings') }}">Settings <span></span></a>
+    <a class="{% if active_tab == 'scraper' %}active{% endif %}" href="{{ url_for('index', tab='scraper') }}">Scraper Specs <span></span></a>
+
+    <details class="legacy-nav" {% if active_tab in ['runs', 'staging', 'batches', 'scrapes', 'snapshots', 'settings', 'home', 'companies', 'discovery', 'tasks', 'errors'] %}open{% endif %}>
+      <summary>Advanced</summary>
+      <a class="{% if active_tab == 'runs' %}active{% endif %}" href="{{ url_for('index', tab='runs') }}">Runs & Logs <span></span></a>
+      <a class="{% if active_tab == 'staging' %}active{% endif %}" href="{{ url_for('index', tab='staging') }}">Raw Staging <span>{{ stats.staging_pending }}</span></a>
+      <a class="{% if active_tab == 'batches' %}active{% endif %}" href="{{ url_for('index', tab='batches') }}">Batch History <span></span></a>
+      <a class="{% if active_tab == 'scrapes' %}active{% endif %}" href="{{ url_for('index', tab='scrapes') }}">Provider Attempts <span></span></a>
+      <a class="{% if active_tab == 'snapshots' %}active{% endif %}" href="{{ url_for('index', tab='snapshots') }}">Snapshots <span></span></a>
+      <a class="{% if active_tab == 'settings' %}active{% endif %}" href="{{ url_for('index', tab='settings') }}">Settings <span></span></a>
+      <a class="{% if active_tab == 'discovery' %}active{% endif %}" href="{{ url_for('index', tab='discovery') }}">Discovery <span>{{ stats.discoveries }}</span></a>
+      <a class="{% if active_tab == 'tasks' %}active{% endif %}" href="{{ url_for('index', tab='tasks') }}">Old Tasks <span>{{ stats.active_tasks }}</span></a>
+      <a class="{% if active_tab == 'errors' %}active{% endif %}" href="{{ url_for('index', tab='errors') }}">Old Errors <span>{{ stats.errors }}</span></a>
+      <a class="{% if active_tab == 'companies' %}active{% endif %}" href="{{ url_for('index', tab='companies') }}">Old Companies <span>{{ stats.companies }}</span></a>
+    </details>
   </nav>
 </aside>

@@ -1,0 +1,138 @@
+<div class="stack">
+  <div class="stats">
+    <div class="stat">
+      <strong>{{ scraper_specs.stats.total_specs if scraper_specs.stats else 0 }}</strong>
+      <span>Total specs</span>
+    </div>
+    <div class="stat">
+      <strong>{{ scraper_specs.stats.promoted_specs if scraper_specs.stats else 0 }}</strong>
+      <span>Promoted specs</span>
+    </div>
+    <div class="stat">
+      <strong>{{ scraper_specs.stats.observations if scraper_specs.stats else 0 }}</strong>
+      <span>Observations</span>
+    </div>
+    <div class="stat">
+      <strong>{{ scraper_specs.stats.failed_observations if scraper_specs.stats else 0 }}</strong>
+      <span>Failed observations</span>
+    </div>
+  </div>
+
+  <section class="panel">
+    <div class="table-toolbar">
+      <div>
+        <h2>Scraper Memory</h2>
+        <p class="muted">Specs and observations written by the Railway Playwright API from the shared Postgres database.</p>
+      </div>
+      <form class="search" method="get" action="{{ url_for('index') }}">
+        <input type="hidden" name="tab" value="scraper">
+        <input name="q" value="{{ query }}" placeholder="Filter by domain">
+        <button type="submit">Search</button>
+      </form>
+    </div>
+
+    <div class="task-history-wrap">
+      <table class="compact-table">
+        <thead>
+          <tr>
+            <th>Domain</th>
+            <th>Status</th>
+            <th>Score</th>
+            <th>Success / Failure</th>
+            <th>Updated</th>
+            <th>Spec</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for spec in scraper_specs.specs %}
+            <tr>
+              <td>
+                <div class="title">{{ spec.domain }}</div>
+                <div class="sub">#{{ spec.id }}</div>
+              </td>
+              <td><span class="pill {% if spec.status == 'promoted' %}feature{% endif %}">{{ spec.status }}</span></td>
+              <td>{{ spec.score }}</td>
+              <td>{{ spec.success_count }} / {{ spec.failure_count }}</td>
+              <td>{{ display_time(spec.updated_at) }}</td>
+              <td>
+                <details class="inline-details">
+                  <summary>View JSON</summary>
+                  <pre class="mini-json">{{ pretty_json(spec.spec_json) }}</pre>
+                </details>
+              </td>
+              <td class="actions">
+                {% if spec.status == 'promoted' %}
+                  <form class="inline" method="post" action="{{ url_for('demote_scraper_spec', spec_id=spec.id) }}">
+                    <button title="Demote spec" class="icon-button"><i class="fa-solid fa-arrow-down"></i></button>
+                  </form>
+                {% else %}
+                  <form class="inline" method="post" action="{{ url_for('promote_scraper_spec', spec_id=spec.id) }}">
+                    <button title="Promote spec" class="icon-button featured"><i class="fa-solid fa-arrow-up"></i></button>
+                  </form>
+                {% endif %}
+                <form class="inline" method="post" action="{{ url_for('delete_scraper_spec', spec_id=spec.id) }}" data-confirm="Delete this scraper spec?">
+                  <button title="Delete spec" class="icon-button danger"><i class="fa-solid fa-trash"></i></button>
+                </form>
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="7" class="muted">No scraper specs found yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="table-toolbar">
+      <div>
+        <h2>Recent Observations</h2>
+        <p class="muted">Latest extraction outcomes recorded by domain.</p>
+      </div>
+      <form method="post" action="{{ url_for('delete_failed_scraper_observations') }}" data-confirm="Delete all failed observations?">
+        <button class="danger" type="submit">Delete Failed</button>
+      </form>
+    </div>
+
+    <div class="task-history-wrap">
+      <table class="compact-table">
+        <thead>
+          <tr>
+            <th>Domain</th>
+            <th>Result</th>
+            <th>Latency</th>
+            <th>Observed</th>
+            <th>Error</th>
+            <th>Spec</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for observation in scraper_specs.observations %}
+            <tr>
+              <td>{{ observation.domain }}</td>
+              <td>
+                {% if observation.success %}
+                  <span class="pill feature">success</span>
+                {% else %}
+                  <span class="pill warn">failed</span>
+                {% endif %}
+              </td>
+              <td>{{ observation.latency_ms or "" }}</td>
+              <td>{{ display_time(observation.observed_at) }}</td>
+              <td>{{ observation.error or "" }}</td>
+              <td>
+                <details class="inline-details">
+                  <summary>View JSON</summary>
+                  <pre class="mini-json">{{ pretty_json(observation.spec_json) }}</pre>
+                </details>
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="6" class="muted">No observations recorded yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>

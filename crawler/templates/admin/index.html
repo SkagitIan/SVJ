@@ -1,14 +1,30 @@
 {% extends "admin/layout.html" %}
 
 {% block content %}
-  {% if active_tab == 'home' %}
+  {% if active_tab == 'dashboard' %}
+    {% include "admin/_operator_dashboard.html" %}
+  {% elif active_tab == 'employers' %}
+    {% include "admin/_operator_employers.html" %}
+  {% elif active_tab == 'runs' %}
+    {% include "admin/_pipeline_runs.html" %}
+  {% elif active_tab == 'scrapes' %}
+    {% include "admin/_pipeline_scrapes.html" %}
+  {% elif active_tab == 'staging' %}
+    {% include "admin/_pipeline_staging.html" %}
+  {% elif active_tab == 'batches' %}
+    {% include "admin/_pipeline_batches.html" %}
+  {% elif active_tab == 'snapshots' %}
+    {% include "admin/_pipeline_snapshots.html" %}
+  {% elif active_tab == 'home' %}
     {% include "admin/_home.html" %}
   {% elif active_tab == 'companies' %}
     {% include "admin/_companies.html" %}
   {% elif active_tab == 'discovery' %}
     {% include "admin/_discovery.html" %}
   {% elif active_tab == 'jobs' %}
-    {% include "admin/_jobs.html" %}
+    {% include "admin/_operator_jobs.html" %}
+  {% elif active_tab == 'scraper' %}
+    {% include "admin/_scraper_specs.html" %}
   {% elif active_tab == 'tasks' %}
     {% include "admin/_tasks.html" %}
   {% elif active_tab == 'errors' %}

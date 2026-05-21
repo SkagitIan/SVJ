@@ -13,8 +13,8 @@
     {% include "admin/_nav.html" %}
     <div class="content">
       <header>
-        <h1>{% if active_tab == 'companies' %}Companies{% elif active_tab == 'discovery' %}Discovery{% elif active_tab == 'jobs' %}Jobs{% elif active_tab == 'tasks' %}Tasks{% elif active_tab == 'errors' %}Errors{% elif active_tab == 'settings' %}Settings{% else %}Home{% endif %}</h1>
-        <div class="muted">Railway Postgres admin</div>
+        <h1>{% if active_tab == 'dashboard' %}Dashboard{% elif active_tab == 'employers' %}Employers{% elif active_tab == 'jobs' %}Jobs{% elif active_tab == 'scraper' %}Scraper Specs{% elif active_tab == 'runs' %}Runs & Logs{% elif active_tab == 'scrapes' %}Scrapes{% elif active_tab == 'staging' %}Staging{% elif active_tab == 'batches' %}Batches{% elif active_tab == 'snapshots' %}Snapshots{% elif active_tab == 'companies' %}Companies{% elif active_tab == 'discovery' %}Discovery{% elif active_tab == 'tasks' %}Tasks{% elif active_tab == 'errors' %}Errors{% elif active_tab == 'settings' %}Settings{% else %}Home{% endif %}</h1>
+        <div class="muted">Crawler operations</div>
       </header>
       <main>
         {% for category, message in get_flashed_messages(with_categories=true) %}

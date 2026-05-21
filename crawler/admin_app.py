@@ -21,13 +21,19 @@ from dotenv import load_dotenv
 import db
 
 from job_crawler import (
+    NightlyOptions,
     build_ai_client_and_model,
+    check_or_import_classification_batch,
     company_row_to_seed,
+    create_classification_batch,
     import_seed_items_to_db,
     init_db,
     normalize_url,
     now_iso,
     process_seed,
+    regenerate_market_snapshots,
+    run_nightly,
+    apply_classification,
     upsert_seed_to_db,
 )
 
@@ -236,6 +242,39 @@ def ensure_admin_tables(conn: db.connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_task_events_task ON admin_task_events(task_id, created_at)")
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS specs (
+            id BIGSERIAL PRIMARY KEY,
+            domain TEXT NOT NULL,
+            spec_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'candidate',
+            score DOUBLE PRECISION NOT NULL DEFAULT 0,
+            success_count INTEGER NOT NULL DEFAULT 0,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            last_success_at TEXT,
+            last_failure_at TEXT,
+            promoted_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS observations (
+            id BIGSERIAL PRIMARY KEY,
+            domain TEXT NOT NULL,
+            spec_json TEXT NOT NULL,
+            success INTEGER NOT NULL,
+            latency_ms INTEGER,
+            error TEXT,
+            observed_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_specs_domain_status ON specs(domain, status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_observations_domain ON observations(domain)")
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS app_settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL,
@@ -277,6 +316,15 @@ def ensure_admin_tables(conn: db.connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_job_alerts_email ON job_alerts(email)")
+    conn.execute(
+        """
+        UPDATE staging_jobs
+        SET classification_status = 'pending',
+            classification_error = 'Recovered after batch submission failure.'
+        WHERE classification_status = 'failed'
+          AND COALESCE(classification_error, '') IN ('Batch submission failed.', 'Batch submission failed; row returned to pending.')
+        """
+    )
     for index, industry in enumerate(DISCOVERY_INDUSTRIES):
         conn.execute(
             """
@@ -324,6 +372,57 @@ def display_time(value: str | None) -> str:
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone()
     return parsed.strftime("%b %#d, %Y %#I:%M %p")
+
+
+def pretty_json(value: str | None) -> str:
+    if not value:
+        return "{}"
+    try:
+        return json.dumps(json.loads(value), indent=2, sort_keys=True)
+    except json.JSONDecodeError:
+        return value
+
+
+def collect_scraper_specs(conn: db.connection, query: str = "") -> dict[str, Any]:
+    params: list[Any] = []
+    where = "WHERE 1 = 1"
+    if query:
+        where += " AND domain LIKE ?"
+        params.append(f"%{query}%")
+
+    stats = conn.execute(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM specs) AS total_specs,
+            (SELECT COUNT(*) FROM specs WHERE status = 'promoted') AS promoted_specs,
+            (SELECT COUNT(*) FROM observations) AS observations,
+            (SELECT COUNT(*) FROM observations WHERE success = 0) AS failed_observations
+        """
+    ).fetchone()
+    specs = conn.execute(
+        f"""
+        SELECT
+            id, domain, spec_json, status, score, success_count, failure_count,
+            last_success_at, last_failure_at, promoted_at, created_at, updated_at
+        FROM specs
+        {where}
+        ORDER BY
+            CASE WHEN status = 'promoted' THEN 0 ELSE 1 END,
+            updated_at DESC,
+            domain ASC
+        LIMIT 250
+        """,
+        params,
+    ).fetchall()
+    observations = conn.execute(
+        """
+        SELECT id, domain, spec_json, success, latency_ms, error, observed_at
+        FROM observations
+        ORDER BY observed_at DESC, id DESC
+        LIMIT 100
+        """
+    ).fetchall()
+    return {"stats": stats, "specs": specs, "observations": observations}
 
 
 def clean_ai_value(value: Any, max_length: int | None = None) -> str | None:
@@ -417,6 +516,7 @@ def task_label(task_type: str) -> str:
         "continue_discovery": "Continue discovery",
         "enhance_companies": "Enhance company data",
         "enhance_jobs": "Enhance job data",
+        "pipeline_run": "Pipeline run",
     }.get(task_type, task_type.replace("_", " ").title())
 
 
@@ -1665,9 +1765,25 @@ def run_task(db_path: Path, task: dict[str, Any]) -> None:
         return
     if task_type == "delete_all_jobs":
         with connect(db_path) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM job_postings").fetchone()[0]
-            conn.execute("DELETE FROM job_postings")
-        finish_task(db_path, task_id, "completed", f"Deleted {count} jobs.")
+            count = conn.execute("SELECT COUNT(*) FROM job_postings WHERE is_active = 1").fetchone()[0]
+            conn.execute("UPDATE job_postings SET is_active = 0, inactive_at = COALESCE(inactive_at, ?) WHERE is_active = 1", (now_iso(),))
+        finish_task(db_path, task_id, "completed", f"Marked {count} jobs inactive.")
+        return
+
+    if task_type == "pipeline_run":
+        try:
+            options = NightlyOptions(**payload)
+            update_task(db_path, task_id, "Running staging-first pipeline")
+            summary = run_nightly(db_path, options)
+            status = "completed" if summary.status == "completed" else "failed"
+            finish_task(
+                db_path,
+                task_id,
+                status,
+                f"{summary.message} Staged {summary.staged_jobs}, imported {summary.imported_jobs}, failures {summary.failed_count}.",
+            )
+        except Exception as exc:
+            finish_task(db_path, task_id, "failed", str(exc))
         return
 
     if task_type == "fetch_company":
@@ -2528,6 +2644,157 @@ def collect_discovery_view(conn: db.connection) -> dict[str, Any]:
     return {"industries": industries, "counts": counts, "discoveries": discoveries, "open_count": open_count}
 
 
+def parse_json_object(value: str | None) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, json.JSONDecodeError):
+        return {}
+
+
+def collect_pipeline_view(conn: db.connection) -> dict[str, Any]:
+    latest_run = conn.execute(
+        """
+        SELECT *
+        FROM pipeline_runs
+        ORDER BY started_at DESC, id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    runs = conn.execute(
+        """
+        SELECT *
+        FROM pipeline_runs
+        ORDER BY started_at DESC, id DESC
+        LIMIT 100
+        """
+    ).fetchall()
+    run_ids = [int(row["id"]) for row in runs[:25]]
+    events_by_run: dict[int, list[db.Row]] = {run_id: [] for run_id in run_ids}
+    if run_ids:
+        placeholders = ",".join("?" for _ in run_ids)
+        for event in conn.execute(
+            f"""
+            SELECT *
+            FROM pipeline_run_events
+            WHERE pipeline_run_id IN ({placeholders})
+            ORDER BY created_at ASC, id ASC
+            """,
+            run_ids,
+        ).fetchall():
+            events_by_run.setdefault(int(event["pipeline_run_id"]), []).append(event)
+    attempts = conn.execute(
+        """
+        SELECT sa.*, c.business_name
+        FROM scrape_attempts sa
+        JOIN companies c ON c.id = sa.company_id
+        ORDER BY sa.created_at DESC, sa.id DESC
+        LIMIT 200
+        """
+    ).fetchall()
+    staging = conn.execute(
+        """
+        SELECT sj.*, c.business_name
+        FROM staging_jobs sj
+        JOIN companies c ON c.id = sj.company_id
+        ORDER BY sj.created_at DESC, sj.id DESC
+        LIMIT 250
+        """
+    ).fetchall()
+    review_items = conn.execute(
+        """
+        SELECT sj.*, c.business_name
+        FROM staging_jobs sj
+        JOIN companies c ON c.id = sj.company_id
+        WHERE sj.classification_status = 'review'
+           OR (
+                sj.classification_status = 'failed'
+                AND COALESCE(sj.classification_error, '') NOT IN ('Batch submission failed.', 'Batch submission failed; row returned to pending.')
+           )
+        ORDER BY sj.created_at DESC, sj.id DESC
+        LIMIT 200
+        """
+    ).fetchall()
+    review_companies = conn.execute(
+        """
+        SELECT *
+        FROM companies
+        WHERE COALESCE(registry_status, '') = 'needs_review'
+           OR COALESCE(manual_review_reason, '') != ''
+           OR COALESCE(consecutive_failures, 0) >= 3
+        ORDER BY updated_at DESC, business_name COLLATE NOCASE ASC
+        LIMIT 200
+        """
+    ).fetchall()
+    batches = conn.execute(
+        """
+        SELECT *
+        FROM classification_batches
+        ORDER BY created_at DESC, id DESC
+        LIMIT 50
+        """
+    ).fetchall()
+    open_batch = conn.execute(
+        """
+        SELECT *
+        FROM classification_batches
+        WHERE imported = 0
+          AND status NOT IN ('failed', 'expired', 'cancelled', 'canceled')
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    snapshots = conn.execute(
+        """
+        SELECT *
+        FROM market_snapshots
+        ORDER BY snapshot_date DESC, active_job_count DESC, dimension_value ASC
+        LIMIT 120
+        """
+    ).fetchall()
+    due_count = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM companies
+        WHERE COALESCE(registry_status, 'active') IN ('active', 'needs_review')
+          AND COALESCE(no_jobs_verified, 0) = 0
+          AND (
+            last_scraped_at IS NULL
+            OR next_scrape_at IS NULL
+            OR next_scrape_at <= ?
+          )
+        """,
+        (now_iso(),),
+    ).fetchone()[0]
+    counts = conn.execute(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM staging_jobs WHERE classification_status = 'pending') AS staging_pending,
+            (SELECT COUNT(*) FROM staging_jobs WHERE classification_status = 'queued') AS staging_queued,
+            (SELECT COUNT(*) FROM staging_jobs WHERE classification_status = 'review') AS staging_review,
+            (SELECT COUNT(*) FROM staging_jobs WHERE classification_status = 'failed') AS staging_failed,
+            (SELECT COUNT(*) FROM staging_jobs WHERE classification_status = 'imported') AS staging_imported,
+            (SELECT COUNT(*) FROM scrape_attempts WHERE status = 'failed') AS scrape_failures,
+            (SELECT COUNT(*) FROM classification_batches WHERE imported = 0 AND status NOT IN ('failed', 'expired', 'cancelled', 'canceled')) AS open_batches
+        """
+    ).fetchone()
+    return {
+        "latest_run": latest_run,
+        "runs": runs,
+        "events_by_run": events_by_run,
+        "attempts": attempts,
+        "staging": staging,
+        "review_items": review_items,
+        "review_companies": review_companies,
+        "batches": batches,
+        "open_batch": open_batch,
+        "snapshots": snapshots,
+        "counts": counts,
+        "due_count": due_count,
+        "latest_options": parse_json_object(latest_run["options_json"] if latest_run else None),
+    }
+
+
 def create_app(db_path: Path = DEFAULT_DB) -> Flask:
     load_dotenv(Path(__file__).with_name(".env"))
     app = Flask(__name__)
@@ -2536,9 +2803,12 @@ def create_app(db_path: Path = DEFAULT_DB) -> Flask:
 
     @app.get("/admin")
     def index() -> str:
-        active_tab = request.args.get("tab", "home")
-        if active_tab not in {"home", "companies", "discovery", "jobs", "tasks", "errors", "settings"}:
-            active_tab = "home"
+        active_tab = request.args.get("tab", "dashboard")
+        aliases = {"overview": "dashboard", "registry": "employers", "review": "jobs"}
+        active_tab = aliases.get(active_tab, active_tab)
+        pipeline_tabs = {"dashboard", "employers", "runs", "scrapes", "staging", "batches", "snapshots"}
+        if active_tab not in pipeline_tabs | {"home", "companies", "discovery", "jobs", "tasks", "errors", "settings", "scraper"}:
+            active_tab = "dashboard"
         query = request.args.get("q", "").strip()
         with connect(app.config["DB_PATH"]) as conn:
             if active_tab == "discovery":
@@ -2557,7 +2827,7 @@ def create_app(db_path: Path = DEFAULT_DB) -> Flask:
             ).fetchall()
 
             params: list[Any] = []
-            where = "WHERE j.is_active = 1"
+            where = "WHERE 1 = 1"
             if query:
                 where += """
                     AND (
@@ -2593,7 +2863,18 @@ def create_app(db_path: Path = DEFAULT_DB) -> Flask:
                     (SELECT COUNT(*) FROM job_postings WHERE is_featured = 1 AND is_active = 1) AS featured_jobs,
                     (SELECT COUNT(*) FROM discovered_businesses WHERE status IN ('discovered', 'queued', 'checking', 'needs_review', 'failed_verification')) AS discoveries,
                     (SELECT COUNT(*) FROM crawl_errors WHERE error_type != 'rejected_job') AS errors,
-                    (SELECT COUNT(*) FROM admin_tasks WHERE status IN ('pending', 'running')) AS active_tasks
+                    (SELECT COUNT(*) FROM admin_tasks WHERE status IN ('pending', 'running')) AS active_tasks,
+                    (SELECT COUNT(*) FROM staging_jobs WHERE classification_status = 'pending') AS staging_pending,
+                    (
+                        SELECT COUNT(*)
+                        FROM staging_jobs
+                        WHERE classification_status = 'review'
+                           OR (
+                                classification_status = 'failed'
+                                AND COALESCE(classification_error, '') NOT IN ('Batch submission failed.', 'Batch submission failed; row returned to pending.')
+                           )
+                    ) AS review_count,
+                    (SELECT COUNT(*) FROM pipeline_runs WHERE status = 'running') AS active_pipeline_runs
                 """
             ).fetchone()
             errors = collect_errors(conn) if active_tab == "errors" else []
@@ -2603,6 +2884,8 @@ def create_app(db_path: Path = DEFAULT_DB) -> Flask:
             company_enrichment = collect_company_enrichment_status(conn)
             job_enrichment = collect_job_enrichment_status(conn)
             discovery = collect_discovery_view(conn) if active_tab == "discovery" else {"industries": [], "counts": {}, "discoveries": [], "open_count": stats["discoveries"]}
+            pipeline = collect_pipeline_view(conn)
+            scraper_specs = collect_scraper_specs(conn, query) if active_tab == "scraper" else {"stats": None, "specs": [], "observations": []}
 
         if stats["active_tasks"]:
             start_task_worker(app.config["DB_PATH"])
@@ -2620,9 +2903,50 @@ def create_app(db_path: Path = DEFAULT_DB) -> Flask:
             company_enrichment=company_enrichment,
             job_enrichment=job_enrichment,
             discovery=discovery,
+            pipeline=pipeline,
+            scraper_specs=scraper_specs,
             query=query,
             display_time=display_time,
+            pretty_json=pretty_json,
         )
+
+    @app.post("/scraper/specs/<int:spec_id>/promote")
+    def promote_scraper_spec(spec_id: int):
+        timestamp = now_iso()
+        with connect(app.config["DB_PATH"]) as conn:
+            row = conn.execute("SELECT domain FROM specs WHERE id = ?", (spec_id,)).fetchone()
+            if not row:
+                flash("Spec not found.", "error")
+                return redirect(url_for("index", tab="scraper"))
+            conn.execute("UPDATE specs SET status = 'candidate', updated_at = ? WHERE domain = ?", (timestamp, row["domain"]))
+            conn.execute(
+                "UPDATE specs SET status = 'promoted', promoted_at = ?, updated_at = ? WHERE id = ?",
+                (timestamp, timestamp, spec_id),
+            )
+        flash("Spec promoted.", "ok")
+        return redirect(url_for("index", tab="scraper"))
+
+    @app.post("/scraper/specs/<int:spec_id>/demote")
+    def demote_scraper_spec(spec_id: int):
+        with connect(app.config["DB_PATH"]) as conn:
+            conn.execute("UPDATE specs SET status = 'candidate', updated_at = ? WHERE id = ?", (now_iso(), spec_id))
+        flash("Spec demoted.", "ok")
+        return redirect(url_for("index", tab="scraper"))
+
+    @app.post("/scraper/specs/<int:spec_id>/delete")
+    def delete_scraper_spec(spec_id: int):
+        with connect(app.config["DB_PATH"]) as conn:
+            conn.execute("DELETE FROM specs WHERE id = ?", (spec_id,))
+        flash("Spec deleted.", "ok")
+        return redirect(url_for("index", tab="scraper"))
+
+    @app.post("/scraper/observations/delete-failed")
+    def delete_failed_scraper_observations():
+        with connect(app.config["DB_PATH"]) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM observations WHERE success = 0").fetchone()[0]
+            conn.execute("DELETE FROM observations WHERE success = 0")
+        flash(f"Deleted {count} failed observations.", "ok")
+        return redirect(url_for("index", tab="scraper"))
 
     @app.post("/companies")
     def add_company():
@@ -2676,6 +3000,11 @@ def create_app(db_path: Path = DEFAULT_DB) -> Flask:
                     industry = ?,
                     homepage_url = ?,
                     jobs_url = ?,
+                    career_url = ?,
+                    permanent_connector_url = ?,
+                    connector_type = ?,
+                    scrape_strategy = ?,
+                    registry_status = ?,
                     no_jobs_verified = ?,
                     no_jobs_verified_at = CASE WHEN ? = 1 AND no_jobs_verified = 0 THEN ? WHEN ? = 0 THEN NULL ELSE no_jobs_verified_at END,
                     no_jobs_note = ?,
@@ -2690,6 +3019,11 @@ def create_app(db_path: Path = DEFAULT_DB) -> Flask:
                     clean_form_value("industry"),
                     homepage_url,
                     jobs_url,
+                    normalize_url(clean_form_value("career_url") or "") or jobs_url,
+                    normalize_url(clean_form_value("permanent_connector_url") or ""),
+                    clean_form_value("connector_type"),
+                    clean_form_value("scrape_strategy"),
+                    clean_form_value("registry_status") or "active",
                     no_jobs_verified,
                     no_jobs_verified,
                     timestamp,
@@ -2704,9 +3038,151 @@ def create_app(db_path: Path = DEFAULT_DB) -> Flask:
 
     @app.post("/companies/<int:company_id>/crawl")
     def crawl_company(company_id: int):
-        task_id = enqueue_task(app.config["DB_PATH"], "fetch_company", {"company_id": company_id})
-        flash(f"Queued get jobs task #{task_id}.", "ok")
-        return redirect(url_for("index", tab="companies"))
+        try:
+            summary = run_nightly(
+                app.config["DB_PATH"],
+                NightlyOptions(company_id=company_id, force=True, skip_batch_import=True, skip_snapshot=True),
+            )
+            flash(f"Staged {summary.staged_jobs} job candidates for classification.", "ok")
+        except Exception as exc:
+            flash(f"Company scrape failed: {exc}", "error")
+        return redirect(url_for("index", tab="employers"))
+
+    @app.post("/pipeline/run")
+    def pipeline_run():
+        only = clean_form_value("only")
+        if only not in {None, "scrape", "classify", "snapshot", "import-batch"}:
+            only = None
+        provider = clean_form_value("provider") or "auto"
+        if provider not in {"openai", "jina", "firecrawl", "connector", "mitm", "auto"}:
+            provider = "auto"
+        try:
+            limit_value = clean_form_value("limit")
+            company_value = clean_form_value("company_id")
+            classification_limit = clean_form_value("classification_limit")
+            options = NightlyOptions(
+                limit=int(limit_value) if limit_value else None,
+                company_id=int(company_value) if company_value else None,
+                force=request.form.get("force") == "1",
+                dry_run=request.form.get("dry_run") == "1",
+                only=only,
+                skip_scrape=request.form.get("skip_scrape") == "1",
+                skip_batch_submit=request.form.get("skip_batch_submit") == "1",
+                skip_batch_import=request.form.get("skip_batch_import") == "1",
+                skip_snapshot=request.form.get("skip_snapshot") == "1",
+                provider=provider,
+                no_mark_inactive=request.form.get("no_mark_inactive") == "1",
+                workers=max(1, min(8, int(request.form.get("workers") or 1))),
+                classification_limit=max(1, int(classification_limit or 500)),
+            )
+            summary = run_nightly(app.config["DB_PATH"], options)
+            flash(
+                f"{summary.status}: {summary.message} Staged {summary.staged_jobs}, imported {summary.imported_jobs}, failures {summary.failed_count}.",
+                "ok" if summary.status == "completed" else "error",
+            )
+        except Exception as exc:
+            flash(f"Pipeline run failed: {exc}", "error")
+        return redirect(url_for("index", tab=request.form.get("return_tab") or "overview"))
+
+    @app.post("/pipeline/classification/check")
+    def pipeline_classification_check():
+        try:
+            message, _imported, _failures = check_or_import_classification_batch(app.config["DB_PATH"])
+            flash(message, "ok")
+        except Exception as exc:
+            flash(f"Classification batch check failed: {exc}", "error")
+        return redirect(url_for("index", tab="batches"))
+
+    @app.post("/pipeline/classification/create")
+    def pipeline_classification_create():
+        try:
+            limit = max(1, int(request.form.get("classification_limit") or 500))
+            no_mark_inactive = request.form.get("no_mark_inactive") == "1"
+            message = create_classification_batch(app.config["DB_PATH"], limit=limit, no_mark_inactive=no_mark_inactive)
+            flash(message, "ok")
+        except Exception as exc:
+            flash(f"Classification batch creation failed: {exc}", "error")
+        return redirect(url_for("index", tab="batches"))
+
+    @app.post("/pipeline/snapshots/regenerate")
+    def pipeline_snapshot_regenerate():
+        try:
+            count = regenerate_market_snapshots(app.config["DB_PATH"])
+            flash(f"Regenerated {count} snapshot rows.", "ok")
+        except Exception as exc:
+            flash(f"Snapshot regeneration failed: {exc}", "error")
+        return redirect(url_for("index", tab="snapshots"))
+
+    @app.post("/staging/<int:staging_id>/retry")
+    def retry_staging(staging_id: int):
+        with connect(app.config["DB_PATH"]) as conn:
+            conn.execute(
+                """
+                UPDATE staging_jobs
+                SET classification_status = 'pending',
+                    classification_error = NULL,
+                    classified_at = NULL
+                WHERE id = ?
+                """,
+                (staging_id,),
+            )
+        flash(f"Staging row #{staging_id} queued for classification retry.", "ok")
+        return redirect(url_for("index", tab="jobs"))
+
+    @app.post("/staging/<int:staging_id>/discard")
+    def discard_staging(staging_id: int):
+        with connect(app.config["DB_PATH"]) as conn:
+            conn.execute(
+                """
+                UPDATE staging_jobs
+                SET classification_status = 'discarded',
+                    classification_error = COALESCE(classification_error, 'Discarded from admin review.'),
+                    classified_at = COALESCE(classified_at, ?)
+                WHERE id = ?
+                """,
+                (now_iso(), staging_id),
+            )
+        flash(f"Staging row #{staging_id} discarded.", "ok")
+        return redirect(url_for("index", tab="jobs"))
+
+    @app.post("/staging/<int:staging_id>/approve")
+    def approve_staging(staging_id: int):
+        try:
+            with connect(app.config["DB_PATH"]) as conn:
+                row = conn.execute("SELECT classification_json FROM staging_jobs WHERE id = ?", (staging_id,)).fetchone()
+                if not row or not row["classification_json"]:
+                    flash("No classification JSON is available to approve.", "error")
+                    return redirect(url_for("index", tab="jobs"))
+                data = json.loads(row["classification_json"])
+                if not isinstance(data, dict):
+                    raise ValueError("Classification JSON is not an object.")
+                data["is_local_skagit"] = True
+                data["needs_manual_review"] = False
+                data["confidence_score"] = max(75, int(data.get("confidence_score") or 0))
+                status, job_id = apply_classification(conn, staging_id, data)
+                if status != "imported":
+                    raise ValueError(f"Approval did not import the job; status is {status}.")
+            flash(f"Approved staging row #{staging_id} into production job #{job_id}.", "ok")
+        except Exception as exc:
+            flash(f"Approval failed: {exc}", "error")
+        return redirect(url_for("index", tab="jobs"))
+
+    @app.post("/companies/<int:company_id>/review-resolved")
+    def resolve_company_review(company_id: int):
+        with connect(app.config["DB_PATH"]) as conn:
+            conn.execute(
+                """
+                UPDATE companies
+                SET registry_status = 'active',
+                    manual_review_reason = NULL,
+                    consecutive_failures = 0,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (now_iso(), company_id),
+            )
+        flash("Company review cleared.", "ok")
+        return redirect(url_for("index", tab="employers"))
 
     @app.post("/companies/import")
     def import_companies():
@@ -2879,8 +3355,8 @@ def create_app(db_path: Path = DEFAULT_DB) -> Flask:
     @app.post("/jobs/<int:job_id>/delete")
     def delete_job(job_id: int):
         with connect(app.config["DB_PATH"]) as conn:
-            conn.execute("DELETE FROM job_postings WHERE id = ?", (job_id,))
-        flash("Job deleted.", "ok")
+            conn.execute("UPDATE job_postings SET is_active = 0, inactive_at = COALESCE(inactive_at, ?) WHERE id = ?", (now_iso(), job_id))
+        flash("Job marked inactive.", "ok")
         return redirect(request.referrer or url_for("index", tab="jobs"))
 
     @app.post("/tasks/fetch-all")
@@ -2890,8 +3366,12 @@ def create_app(db_path: Path = DEFAULT_DB) -> Flask:
         except ValueError:
             workers = 4
         workers = max(1, min(8, workers))
-        task_id = enqueue_task(app.config["DB_PATH"], "fetch_all", {"workers": workers})
-        flash(f"Queued fetch all jobs task #{task_id} with {workers} workers.", "ok")
+        task_id = enqueue_task(
+            app.config["DB_PATH"],
+            "pipeline_run",
+            {"force": True, "workers": workers, "skip_batch_import": True, "skip_snapshot": True},
+        )
+        flash(f"Queued pipeline scrape/classification-submit task #{task_id} with {workers} workers.", "ok")
         return redirect(url_for("index", tab="tasks"))
 
     @app.post("/tasks/<int:task_id>/cancel")
