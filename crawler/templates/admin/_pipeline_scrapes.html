@@ -1,0 +1,26 @@
+<section class="panel">
+  <h2>Scrape Attempts</h2>
+  <table>
+    <thead>
+      <tr><th>When</th><th>Employer</th><th>Provider</th><th>Status</th><th>Staged</th><th>Evidence / Error</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      {% for attempt in pipeline.attempts %}
+        <tr>
+          <td>{{ display_time(attempt.created_at) }}</td>
+          <td>{{ attempt.business_name }}</td>
+          <td>{{ attempt.provider }}</td>
+          <td><span class="pill {% if attempt.status == 'failed' %}warn{% else %}feature{% endif %}">{{ attempt.status }}</span></td>
+          <td>{{ attempt.staged_job_count }}</td>
+          <td>
+            {% if attempt.error %}<div class="title">{{ attempt.error }}</div>{% endif %}
+            <pre class="mini-json">{{ attempt.evidence_json }}</pre>
+          </td>
+          <td><a href="{{ attempt.source_url }}" target="_blank">{{ attempt.source_url }}</a></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="muted">No scrape attempts yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>

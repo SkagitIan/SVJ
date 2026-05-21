@@ -46,6 +46,11 @@
               <div><label>Company URL</label><input name="seed_url" value="{{ company.seed_url }}"></div>
               <div><label>Homepage URL</label><input name="homepage_url" value="{{ company.homepage_url or '' }}"></div>
               <div><label>Job source URL</label><input name="jobs_url" required value="{{ company.jobs_url or '' }}"></div>
+              <div><label>Career URL</label><input name="career_url" value="{{ company.career_url or company.jobs_url or '' }}"></div>
+              <div><label>Connector URL</label><input name="permanent_connector_url" value="{{ company.permanent_connector_url or '' }}"></div>
+              <div><label>Connector type</label><input name="connector_type" value="{{ company.connector_type or '' }}" placeholder="workday, greenhouse, custom_json"></div>
+              <div><label>Scrape strategy</label><input name="scrape_strategy" value="{{ company.scrape_strategy or '' }}" placeholder="auto, connector, openai, jina"></div>
+              <div><label>Registry status</label><select name="registry_status"><option value="active" {% if (company.registry_status or 'active') == 'active' %}selected{% endif %}>active</option><option value="needs_review" {% if company.registry_status == 'needs_review' %}selected{% endif %}>needs_review</option><option value="paused" {% if company.registry_status == 'paused' %}selected{% endif %}>paused</option></select></div>
               <div><label>Last checked</label><input readonly value="{{ company.last_checked_at or '' }}"></div>
               <div>
                 <label>No jobs verified</label>

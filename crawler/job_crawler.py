@@ -7,7 +7,10 @@ import json
 import os
 import re
 import sys
+import tempfile
+import threading
 import time
+import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,7 +21,7 @@ from urllib.request import Request, urlopen
 
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAI
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
 
@@ -193,6 +196,52 @@ class CloudflareExtractionResult:
     evidence: list[str]
     browser_ms: int | None = None
     raw_result: dict[str, Any] | None = None
+
+
+@dataclass
+class NightlyOptions:
+    limit: int | None = None
+    company_id: int | None = None
+    force: bool = False
+    dry_run: bool = False
+    only: str | None = None
+    skip_scrape: bool = False
+    skip_batch_submit: bool = False
+    skip_batch_import: bool = False
+    skip_snapshot: bool = False
+    provider: str = "auto"
+    no_mark_inactive: bool = False
+    workers: int = 1
+    classification_limit: int = 500
+
+
+@dataclass
+class PipelineSummary:
+    run_id: int | None
+    status: str
+    message: str
+    companies_considered: int = 0
+    companies_scraped: int = 0
+    staged_jobs: int = 0
+    imported_jobs: int = 0
+    failed_count: int = 0
+    snapshot_rows: int = 0
+    batch_message: str | None = None
+
+
+@dataclass
+class ProviderScrapeResult:
+    provider: str
+    status: str
+    jobs: list[dict[str, Any]]
+    source_url: str | None
+    evidence: list[str]
+    confidence: int = 0
+    platform: str | None = None
+    connector_url: str | None = None
+    error: str | None = None
+    raw: dict[str, Any] | None = None
+    duration_ms: int = 0
 
 
 def now_iso() -> str:
@@ -1533,6 +1582,15 @@ def init_db(db_path: Path) -> None:
             "no_jobs_verified_at": "TEXT",
             "no_jobs_note": "TEXT",
             "ai_enriched_at": "TEXT",
+            "registry_status": "TEXT NOT NULL DEFAULT 'active'",
+            "career_url": "TEXT",
+            "permanent_connector_url": "TEXT",
+            "connector_type": "TEXT",
+            "scrape_strategy": "TEXT",
+            "consecutive_failures": "INTEGER NOT NULL DEFAULT 0",
+            "manual_review_reason": "TEXT",
+            "last_scraped_at": "TEXT",
+            "next_scrape_at": "TEXT",
         }.items():
             if column not in company_columns:
                 conn.execute(f"ALTER TABLE companies ADD COLUMN {column} {definition}")
@@ -1743,9 +1801,155 @@ def init_db(db_path: Path) -> None:
             "ai_confidence_score": "INTEGER NOT NULL DEFAULT 0",
             "ai_needs_manual_review": "INTEGER NOT NULL DEFAULT 0",
             "ai_enriched_at": "TEXT",
+            "normalized_title": "TEXT",
+            "onet_code": "TEXT",
+            "local_sector": "TEXT",
+            "skills_json": "TEXT NOT NULL DEFAULT '[]'",
+            "employment_type": "TEXT",
+            "salary_min": "REAL",
+            "salary_max": "REAL",
+            "salary_type": "TEXT",
+            "education_requirements": "TEXT",
+            "experience_requirements": "TEXT",
+            "classification_confidence": "INTEGER NOT NULL DEFAULT 0",
+            "is_local_skagit": "INTEGER NOT NULL DEFAULT 1",
+            "inactive_at": "TEXT",
+            "staging_job_id": "INTEGER",
+            "pipeline_run_id": "INTEGER",
         }.items():
             if column not in columns:
                 conn.execute(f"ALTER TABLE job_postings ADD COLUMN {column} {definition}")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pipeline_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_type TEXT NOT NULL DEFAULT 'nightly',
+                status TEXT NOT NULL DEFAULT 'running',
+                options_json TEXT NOT NULL DEFAULT '{}',
+                message TEXT,
+                companies_considered INTEGER NOT NULL DEFAULT 0,
+                companies_scraped INTEGER NOT NULL DEFAULT 0,
+                staged_jobs INTEGER NOT NULL DEFAULT 0,
+                imported_jobs INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                snapshot_rows INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                duration_ms INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scrape_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pipeline_run_id INTEGER REFERENCES pipeline_runs(id),
+                company_id INTEGER NOT NULL REFERENCES companies(id),
+                provider TEXT NOT NULL,
+                status TEXT NOT NULL,
+                source_url TEXT,
+                evidence_json TEXT NOT NULL DEFAULT '[]',
+                error TEXT,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                staged_job_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pipeline_run_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pipeline_run_id INTEGER REFERENCES pipeline_runs(id),
+                level TEXT NOT NULL DEFAULT 'info',
+                step TEXT NOT NULL,
+                message TEXT NOT NULL,
+                details_json TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS staging_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pipeline_run_id INTEGER REFERENCES pipeline_runs(id),
+                company_id INTEGER NOT NULL REFERENCES companies(id),
+                raw_fingerprint TEXT NOT NULL UNIQUE,
+                provider TEXT NOT NULL,
+                source_url TEXT NOT NULL,
+                source_type TEXT NOT NULL DEFAULT 'unknown',
+                raw_title TEXT,
+                raw_location TEXT,
+                raw_description TEXT,
+                raw_application_url TEXT,
+                raw_payload_json TEXT NOT NULL,
+                classification_status TEXT NOT NULL DEFAULT 'pending',
+                classification_error TEXT,
+                classification_json TEXT,
+                classified_at TEXT,
+                scraped_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS classification_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                openai_batch_id TEXT,
+                input_file_id TEXT,
+                output_file_id TEXT,
+                error_file_id TEXT,
+                status TEXT NOT NULL DEFAULT 'local_created',
+                model TEXT,
+                total_requests INTEGER NOT NULL DEFAULT 0,
+                completed_requests INTEGER NOT NULL DEFAULT 0,
+                failed_requests INTEGER NOT NULL DEFAULT 0,
+                no_mark_inactive INTEGER NOT NULL DEFAULT 0,
+                message TEXT,
+                imported INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                submitted_at TEXT,
+                checked_at TEXT,
+                completed_at TEXT,
+                imported_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS classification_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id INTEGER NOT NULL REFERENCES classification_batches(id),
+                staging_job_id INTEGER NOT NULL REFERENCES staging_jobs(id),
+                custom_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                error TEXT,
+                raw_response_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(batch_id, custom_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS market_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_date TEXT NOT NULL,
+                dimension_type TEXT NOT NULL,
+                dimension_value TEXT NOT NULL,
+                active_job_count INTEGER NOT NULL DEFAULT 0,
+                employer_count INTEGER NOT NULL DEFAULT 0,
+                avg_salary_min REAL,
+                avg_salary_max REAL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                UNIQUE(snapshot_date, dimension_type, dimension_value)
+            )
+            """
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS ai_job_enrichment_batches (
@@ -1808,6 +2012,15 @@ def init_db(db_path: Path) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_requests_batch ON ai_company_enrichment_requests(batch_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_job_enrichment_batches_status ON ai_job_enrichment_batches(status, imported, created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_job_enrichment_requests_batch ON ai_job_enrichment_requests(batch_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started ON pipeline_runs(started_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_run_events_run ON pipeline_run_events(pipeline_run_id, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_scrape_attempts_run ON scrape_attempts(pipeline_run_id, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_scrape_attempts_company ON scrape_attempts(company_id, created_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_staging_jobs_status ON staging_jobs(classification_status, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_staging_jobs_company_run ON staging_jobs(company_id, pipeline_run_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_classification_batches_status ON classification_batches(status, imported, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_classification_requests_batch ON classification_requests(batch_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_market_snapshots_date ON market_snapshots(snapshot_date DESC, dimension_type)")
 
 
 def refresh_days_from_db(db_path: Path, fallback: int = 7) -> int:
@@ -2479,6 +2692,1439 @@ def due_company_seeds(db_path: Path, recrawl_days: int, limit: int | None, force
     return [company_row_to_seed(row) for row in rows]
 
 
+def nightly_options_from_args(args: Any) -> NightlyOptions:
+    return NightlyOptions(
+        limit=getattr(args, "limit", None),
+        company_id=getattr(args, "company_id", None),
+        force=bool(getattr(args, "force", False)),
+        dry_run=bool(getattr(args, "dry_run", False)),
+        only=getattr(args, "only", None),
+        skip_scrape=bool(getattr(args, "skip_scrape", False)),
+        skip_batch_submit=bool(getattr(args, "skip_batch_submit", False)),
+        skip_batch_import=bool(getattr(args, "skip_batch_import", False)),
+        skip_snapshot=bool(getattr(args, "skip_snapshot", False)),
+        provider=getattr(args, "provider", None) or "auto",
+        no_mark_inactive=bool(getattr(args, "no_mark_inactive", False)),
+        workers=max(1, int(getattr(args, "workers", 1) or 1)),
+        classification_limit=max(1, int(getattr(args, "classification_limit", 500) or 500)),
+    )
+
+
+def options_json(options: NightlyOptions) -> str:
+    return json.dumps(asdict(options), sort_keys=True)
+
+
+def create_pipeline_run(db_path: Path, options: NightlyOptions) -> int | None:
+    init_db(db_path)
+    with db.connect(db_path, timeout=30) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO pipeline_runs (run_type, status, options_json, message, started_at)
+            VALUES ('nightly', 'running', ?, ?, ?)
+            RETURNING id
+            """,
+            (options_json(options), "Dry run started." if options.dry_run else "Pipeline started.", now_iso()),
+        )
+        return int(cursor.fetchone()[0])
+
+
+def log_pipeline_event(
+    db_path: Path,
+    run_id: int | None,
+    step: str,
+    message: str,
+    level: str = "info",
+    details: dict[str, Any] | None = None,
+) -> None:
+    if run_id is None:
+        return
+    try:
+        with db.connect(db_path, timeout=30) as conn:
+            conn.execute(
+                """
+                INSERT INTO pipeline_run_events (pipeline_run_id, level, step, message, details_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    level,
+                    step,
+                    message,
+                    json.dumps(details or {}, sort_keys=True) if details else None,
+                    now_iso(),
+                ),
+            )
+    except Exception:
+        # Do not let logging failures hide the real pipeline failure.
+        return
+
+
+def finish_pipeline_run(db_path: Path, summary: PipelineSummary, started: float) -> None:
+    if summary.run_id is None:
+        return
+    duration_ms = int((time.monotonic() - started) * 1000)
+    try:
+        with db.connect(db_path, timeout=30) as conn:
+            conn.execute(
+                """
+                UPDATE pipeline_runs
+                SET status = ?,
+                    message = ?,
+                    companies_considered = ?,
+                    companies_scraped = ?,
+                    staged_jobs = ?,
+                    imported_jobs = ?,
+                    failed_count = ?,
+                    snapshot_rows = ?,
+                    finished_at = ?,
+                    duration_ms = ?
+                WHERE id = ?
+                """,
+                (
+                    summary.status,
+                    summary.message,
+                    summary.companies_considered,
+                    summary.companies_scraped,
+                    summary.staged_jobs,
+                    summary.imported_jobs,
+                    summary.failed_count,
+                    summary.snapshot_rows,
+                    now_iso(),
+                    duration_ms,
+                    summary.run_id,
+                ),
+            )
+    except Exception:
+        return
+
+
+def due_registry_companies(db_path: Path, options: NightlyOptions) -> list[dict[str, Any]]:
+    init_db(db_path)
+    with db.connect(db_path, timeout=30) as conn:
+        if options.company_id:
+            rows = conn.execute(
+                "SELECT * FROM companies WHERE id = ?",
+                (options.company_id,),
+            ).fetchall()
+        else:
+            now_value = now_iso()
+            query = """
+                SELECT *
+                FROM companies
+                WHERE COALESCE(registry_status, 'active') IN ('active', 'needs_review')
+                  AND COALESCE(no_jobs_verified, 0) = 0
+                  AND COALESCE(jobs_url, career_url, homepage_url, seed_url, '') != ''
+                  AND (
+                    ? = 1
+                    OR last_scraped_at IS NULL
+                    OR next_scrape_at IS NULL
+                    OR next_scrape_at <= ?
+                  )
+                ORDER BY COALESCE(last_scraped_at, last_checked_at, '') ASC, id ASC
+            """
+            params: list[Any] = [1 if options.force else 0, now_value]
+            if options.limit:
+                query += " LIMIT ?"
+                params.append(options.limit)
+            rows = conn.execute(query, params).fetchall()
+    return [company_row_to_seed(row) | {key: row[key] for key in row.keys()} for row in rows]
+
+
+def provider_order(seed: dict[str, Any], provider_override: str) -> list[str]:
+    if provider_override and provider_override != "auto":
+        return [provider_override]
+    ordered: list[str] = []
+    if seed.get("permanent_connector_url"):
+        ordered.append("connector")
+    for value in (seed.get("scrape_strategy"), seed.get("extraction_provider")):
+        text = str(value or "").lower()
+        if text in {"connector", "openai", "jina", "firecrawl", "mitm"}:
+            ordered.append(text)
+        elif text in {"cloudflare", "playwright", "crawl4ai"}:
+            ordered.append("openai")
+    ordered.extend(["openai", "jina", "firecrawl", "mitm"])
+    deduped: list[str] = []
+    for provider in ordered:
+        if provider not in deduped:
+            deduped.append(provider)
+    return deduped
+
+
+def job_dict_from_posting(job: JobPosting) -> dict[str, Any]:
+    return asdict(job)
+
+
+def raw_job_fingerprint(company_id: int, job: dict[str, Any]) -> str:
+    basis = "|".join(
+        str(job.get(key) or "").strip().lower()
+        for key in ("application_url", "job_title", "location", "source_url")
+    )
+    return hashlib.sha256(f"{company_id}|{basis}".encode("utf-8")).hexdigest()
+
+
+def request_json(url: str, headers: dict[str, str] | None = None, timeout: int = 45) -> Any:
+    request = Request(url, headers=headers or {"User-Agent": "SkagitValleyJobs/1.0"})
+    with urlopen(request, timeout=timeout) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+    return json.loads(raw)
+
+
+def jobs_from_json_payload(value: Any, source_url: str) -> list[dict[str, Any]]:
+    payloads = find_cloudflare_job_payloads(value)
+    jobs: list[JobPosting] = []
+    for payload in payloads:
+        jobs.extend(job_postings_from_cloudflare_payload(payload, source_url, "general_jobs"))
+    if jobs:
+        return [job_dict_from_posting(job) for job in jobs]
+    if isinstance(value, list):
+        candidates = value
+    elif isinstance(value, dict):
+        candidates = []
+        for key in ("jobs", "results", "data", "items", "openings", "postings"):
+            item = value.get(key)
+            if isinstance(item, list):
+                candidates = item
+                break
+    else:
+        candidates = []
+    output = []
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        title = clean_optional_text(item.get("title") or item.get("job_title") or item.get("name"), 240)
+        if not title:
+            continue
+        output.append(
+            {
+                "job_title": title,
+                "department": clean_optional_text(item.get("department") or item.get("category"), 160),
+                "salary_info": clean_optional_text(item.get("salary") or item.get("pay"), 160),
+                "location": clean_optional_text(item.get("location") or item.get("city"), 240),
+                "description": clean_optional_text(item.get("description") or item.get("summary"), 12000),
+                "application_url": normalize_url(str(item.get("url") or item.get("apply_url") or ""), source_url),
+                "source_url": source_url,
+                "source_type": "general_jobs",
+                "raw": item,
+            }
+        )
+    return output
+
+
+async def scrape_with_connector(seed: dict[str, Any]) -> ProviderScrapeResult:
+    start = time.monotonic()
+    connector_url = normalize_url(str(seed.get("permanent_connector_url") or ""))
+    if not connector_url:
+        return ProviderScrapeResult("connector", "failed", [], None, [], error="No permanent connector URL is saved.")
+    try:
+        payload = await asyncio.to_thread(request_json, connector_url)
+        jobs = jobs_from_json_payload(payload, connector_url)
+        return ProviderScrapeResult(
+            "connector",
+            "ok",
+            jobs,
+            connector_url,
+            [f"Connector returned {len(jobs)} job candidate(s)."],
+            confidence=95 if jobs else 20,
+            connector_url=connector_url,
+            raw={"sample": payload if isinstance(payload, dict) else {"items": len(payload) if isinstance(payload, list) else 0}},
+            duration_ms=int((time.monotonic() - start) * 1000),
+        )
+    except Exception as exc:
+        return ProviderScrapeResult("connector", "failed", [], connector_url, [], error=str(exc), duration_ms=int((time.monotonic() - start) * 1000))
+
+
+async def scrape_with_existing_pipeline(
+    seed: dict[str, Any],
+    provider: str,
+    ai_client: AsyncOpenAI,
+    ai_model: str,
+) -> ProviderScrapeResult:
+    start = time.monotonic()
+    try:
+        processed = await process_seed(
+            dict(seed),
+            max_candidate_pages=12,
+            max_ai_links=60,
+            max_pages=12,
+            max_detail_pages=20,
+            ai_client=ai_client,
+            ai_model=ai_model,
+        )
+        jobs = list(processed.get("jobs") or [])
+        evidence: list[str] = []
+        for source in processed.get("job_sources") or []:
+            evidence.extend(str(item) for item in (source.get("evidence") or []))
+        return ProviderScrapeResult(
+            provider,
+            "ok",
+            jobs,
+            processed.get("jobs_url") or seed.get("jobs_url"),
+            evidence or [f"{provider} extracted {len(jobs)} job candidate(s)."],
+            confidence=90 if jobs else 25,
+            platform=processed.get("platform"),
+            raw={"debug": processed.get("debug"), "job_sources": processed.get("job_sources")},
+            duration_ms=int((time.monotonic() - start) * 1000),
+        )
+    except Exception as exc:
+        return ProviderScrapeResult(provider, "failed", [], seed.get("jobs_url"), [], error=str(exc), duration_ms=int((time.monotonic() - start) * 1000))
+
+
+async def scrape_with_openai_web_search(seed: dict[str, Any], ai_client: AsyncOpenAI, ai_model: str) -> ProviderScrapeResult:
+    start = time.monotonic()
+    company = seed.get("business_name") or seed.get("seed_url") or "Unknown employer"
+    location = fallback_company_location(seed) or "Skagit County, WA"
+    prompt = f"""Find the official employer career page and active job postings for this Skagit County employer.
+
+Employer: {company}
+Known website: {seed.get('homepage_url') or seed.get('seed_url') or ''}
+Known job page: {seed.get('jobs_url') or seed.get('career_url') or ''}
+Location context: {location}
+
+Use primary employer/ATS sources only. Return ONLY valid JSON:
+{{
+  "career_url": "",
+  "platform": "",
+  "evidence": [],
+  "jobs": [
+    {{
+      "job_title": "",
+      "department": "",
+      "salary_info": "",
+      "location": "",
+      "description": "",
+      "application_url": "",
+      "source_url": "",
+      "source_type": "general_jobs"
+    }}
+  ]
+}}
+"""
+    try:
+        response = await ai_client.responses.create(
+            model=ai_model,
+            tools=[{"type": "web_search"}],
+            tool_choice="auto",
+            input=prompt,
+        )
+        text = getattr(response, "output_text", None) or ""
+        if not text:
+            parts: list[str] = []
+            for item in getattr(response, "output", []) or []:
+                for content in getattr(item, "content", []) or []:
+                    value = getattr(content, "text", None)
+                    if value:
+                        parts.append(value)
+            text = "\n".join(parts)
+        data = parse_ai_json_text(text)
+        jobs = []
+        career_url = normalize_url(str(data.get("career_url") or seed.get("jobs_url") or seed.get("career_url") or ""))
+        for item in data.get("jobs") or []:
+            if not isinstance(item, dict):
+                continue
+            title = clean_optional_text(item.get("job_title") or item.get("title"), 240)
+            if not title:
+                continue
+            source_url = normalize_url(str(item.get("source_url") or career_url or seed.get("jobs_url") or ""), career_url)
+            jobs.append(
+                {
+                    "job_title": title,
+                    "department": clean_optional_text(item.get("department"), 160),
+                    "salary_info": clean_optional_text(item.get("salary_info"), 160),
+                    "location": clean_optional_text(item.get("location"), 240),
+                    "description": clean_optional_text(item.get("description"), 12000),
+                    "application_url": normalize_url(str(item.get("application_url") or ""), source_url),
+                    "source_url": source_url or career_url or "",
+                    "source_type": item.get("source_type") or "general_jobs",
+                    "raw": item,
+                }
+            )
+        if jobs:
+            return ProviderScrapeResult(
+                "openai",
+                "ok",
+                jobs,
+                career_url or jobs[0].get("source_url"),
+                [str(item) for item in (data.get("evidence") or [])] or [f"OpenAI web search extracted {len(jobs)} job candidate(s)."],
+                confidence=85,
+                platform=clean_optional_text(data.get("platform"), 120),
+                raw={"openai_web_search": True},
+                duration_ms=int((time.monotonic() - start) * 1000),
+            )
+    except Exception as exc:
+        fallback = await scrape_with_existing_pipeline(seed, "openai", ai_client, ai_model)
+        if fallback.status == "ok":
+            fallback.evidence.insert(0, f"OpenAI web search failed, used rendered fallback: {exc}")
+            return fallback
+        fallback.error = f"OpenAI web search failed: {exc}; rendered fallback failed: {fallback.error}"
+        return fallback
+    fallback = await scrape_with_existing_pipeline(seed, "openai", ai_client, ai_model)
+    if fallback.status == "ok":
+        fallback.evidence.insert(0, "OpenAI web search returned no jobs, used rendered fallback.")
+    return fallback
+
+
+async def scrape_with_jina(seed: dict[str, Any], ai_client: AsyncOpenAI, ai_model: str) -> ProviderScrapeResult:
+    start = time.monotonic()
+    source_url = normalize_url(str(seed.get("jobs_url") or seed.get("career_url") or seed.get("homepage_url") or seed.get("seed_url") or ""))
+    if not source_url:
+        return ProviderScrapeResult("jina", "failed", [], None, [], error="No source URL is available.")
+    jina_url = "https://r.jina.ai/http://" + source_url.removeprefix("https://").removeprefix("http://")
+    try:
+        request = Request(jina_url, headers={"User-Agent": "SkagitValleyJobs/1.0"})
+        with urlopen(request, timeout=45) as response:
+            markdown = response.read().decode("utf-8", errors="replace")
+        html = f"<html><body><pre>{markdown[:180000]}</pre></body></html>"
+        jobs = await ai_extract_jobs_from_page(ai_client, ai_model, source_url, source_url, html, "general_jobs", None)
+        return ProviderScrapeResult(
+            "jina",
+            "ok",
+            [job_dict_from_posting(job) for job in jobs],
+            source_url,
+            [f"Jina Reader returned markdown and AI extracted {len(jobs)} job candidate(s)."],
+            confidence=75 if jobs else 20,
+            raw={"markdown_chars": len(markdown)},
+            duration_ms=int((time.monotonic() - start) * 1000),
+        )
+    except Exception as exc:
+        return ProviderScrapeResult("jina", "failed", [], source_url, [], error=str(exc), duration_ms=int((time.monotonic() - start) * 1000))
+
+
+async def scrape_with_firecrawl(seed: dict[str, Any], ai_client: AsyncOpenAI, ai_model: str) -> ProviderScrapeResult:
+    start = time.monotonic()
+    api_key = os.environ.get("FIRECRAWL_API_KEY")
+    source_url = normalize_url(str(seed.get("jobs_url") or seed.get("career_url") or seed.get("homepage_url") or seed.get("seed_url") or ""))
+    if not api_key:
+        return ProviderScrapeResult("firecrawl", "failed", [], source_url, [], error="FIRECRAWL_API_KEY is not configured.")
+    if not source_url:
+        return ProviderScrapeResult("firecrawl", "failed", [], None, [], error="No source URL is available.")
+    try:
+        payload = json.dumps({"url": source_url, "formats": ["markdown"], "onlyMainContent": True}).encode("utf-8")
+        request = Request(
+            "https://api.firecrawl.dev/v1/scrape",
+            data=payload,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=75) as response:
+            result = json.loads(response.read().decode("utf-8", errors="replace"))
+        data = result.get("data") if isinstance(result, dict) else {}
+        markdown = str((data or {}).get("markdown") or "")
+        html = f"<html><body><pre>{markdown[:180000]}</pre></body></html>"
+        jobs = await ai_extract_jobs_from_page(ai_client, ai_model, source_url, source_url, html, "general_jobs", None)
+        return ProviderScrapeResult(
+            "firecrawl",
+            "ok",
+            [job_dict_from_posting(job) for job in jobs],
+            source_url,
+            [f"Firecrawl returned markdown and AI extracted {len(jobs)} job candidate(s)."],
+            confidence=80 if jobs else 20,
+            raw={"markdown_chars": len(markdown), "success": result.get("success") if isinstance(result, dict) else None},
+            duration_ms=int((time.monotonic() - start) * 1000),
+        )
+    except Exception as exc:
+        return ProviderScrapeResult("firecrawl", "failed", [], source_url, [], error=str(exc), duration_ms=int((time.monotonic() - start) * 1000))
+
+
+async def scrape_with_mitm(seed: dict[str, Any]) -> ProviderScrapeResult:
+    return ProviderScrapeResult(
+        "mitm",
+        "failed",
+        [],
+        seed.get("jobs_url") or seed.get("career_url"),
+        ["mitmproxy connector discovery is a manual review workflow in this first production slice."],
+        error="No permanent connector discovered automatically.",
+    )
+
+
+async def run_provider(seed: dict[str, Any], provider: str, ai_client: AsyncOpenAI, ai_model: str) -> ProviderScrapeResult:
+    if provider == "connector":
+        return await scrape_with_connector(seed)
+    if provider == "jina":
+        return await scrape_with_jina(seed, ai_client, ai_model)
+    if provider == "firecrawl":
+        return await scrape_with_firecrawl(seed, ai_client, ai_model)
+    if provider == "mitm":
+        return await scrape_with_mitm(seed)
+    return await scrape_with_openai_web_search(seed, ai_client, ai_model)
+
+
+def record_scrape_attempt(
+    db_path: Path,
+    run_id: int | None,
+    company_id: int,
+    result: ProviderScrapeResult,
+    staged_count: int,
+    dry_run: bool,
+) -> None:
+    if dry_run:
+        return
+    with db.connect(db_path, timeout=30) as conn:
+        conn.execute(
+            """
+            INSERT INTO scrape_attempts (
+                pipeline_run_id, company_id, provider, status, source_url,
+                evidence_json, error, duration_ms, staged_job_count, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                company_id,
+                result.provider,
+                result.status,
+                result.source_url,
+                json.dumps(result.evidence or [], sort_keys=True),
+                result.error,
+                result.duration_ms,
+                staged_count,
+                now_iso(),
+            ),
+        )
+
+
+def log_scrape_attempt_event(
+    db_path: Path,
+    run_id: int | None,
+    company_id: int,
+    result: ProviderScrapeResult,
+    staged_count: int,
+) -> None:
+    level = "error" if result.status == "failed" else "info"
+    message = f"{result.provider} {result.status}"
+    if staged_count:
+        message += f"; staged {staged_count} job candidate(s)"
+    if result.error:
+        message += f": {result.error}"
+    log_pipeline_event(
+        db_path,
+        run_id,
+        "scrape_attempt",
+        message,
+        level,
+        {
+            "company_id": company_id,
+            "provider": result.provider,
+            "status": result.status,
+            "source_url": result.source_url,
+            "staged_job_count": staged_count,
+            "duration_ms": result.duration_ms,
+            "evidence": result.evidence,
+            "error": result.error,
+        },
+    )
+
+
+def stage_jobs_for_company(
+    db_path: Path,
+    run_id: int | None,
+    company_id: int,
+    result: ProviderScrapeResult,
+    dry_run: bool,
+) -> int:
+    if dry_run:
+        return len(result.jobs)
+    timestamp = now_iso()
+    inserted = 0
+    with db.connect(db_path, timeout=30) as conn:
+        for job in result.jobs:
+            fingerprint = raw_job_fingerprint(company_id, job)
+            cursor = conn.execute(
+                """
+                INSERT INTO staging_jobs (
+                    pipeline_run_id, company_id, raw_fingerprint, provider, source_url, source_type,
+                    raw_title, raw_location, raw_description, raw_application_url, raw_payload_json,
+                    classification_status, scraped_at, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                ON CONFLICT(raw_fingerprint) DO UPDATE SET
+                    pipeline_run_id = excluded.pipeline_run_id,
+                    provider = excluded.provider,
+                    source_url = excluded.source_url,
+                    source_type = excluded.source_type,
+                    raw_title = excluded.raw_title,
+                    raw_location = excluded.raw_location,
+                    raw_description = excluded.raw_description,
+                    raw_application_url = excluded.raw_application_url,
+                    raw_payload_json = excluded.raw_payload_json,
+                    classification_status = CASE
+                        WHEN staging_jobs.classification_status IN ('failed', 'discarded') THEN 'pending'
+                        ELSE staging_jobs.classification_status
+                    END,
+                    scraped_at = excluded.scraped_at
+                RETURNING id
+                """,
+                (
+                    run_id,
+                    company_id,
+                    fingerprint,
+                    result.provider,
+                    result.source_url or job.get("source_url") or "",
+                    job.get("source_type") or "unknown",
+                    job.get("job_title"),
+                    job.get("location"),
+                    job.get("description"),
+                    job.get("application_url"),
+                    json.dumps(job, sort_keys=True),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            if cursor.fetchone():
+                inserted += 1
+    return inserted
+
+
+def update_company_after_scrape(
+    db_path: Path,
+    company_id: int,
+    result: ProviderScrapeResult,
+    staged_count: int,
+    dry_run: bool,
+) -> None:
+    if dry_run:
+        return
+    timestamp = now_iso()
+    next_scrape = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    if result.status == "ok":
+        status = "active"
+        failure_count = 0
+        manual_reason = None
+        last_status = "ok"
+        error = None
+    else:
+        status = "needs_review"
+        failure_count = 1
+        manual_reason = result.error or "Scrape failed."
+        last_status = "error"
+        error = result.error
+    with db.connect(db_path, timeout=30) as conn:
+        row = conn.execute("SELECT consecutive_failures FROM companies WHERE id = ?", (company_id,)).fetchone()
+        existing_failures = int(row["consecutive_failures"] or 0) if row else 0
+        if result.status == "ok":
+            new_failures = 0
+        else:
+            new_failures = existing_failures + failure_count
+            if new_failures < 3:
+                status = "active"
+        conn.execute(
+            """
+            UPDATE companies
+            SET registry_status = ?,
+                career_url = COALESCE(?, career_url, jobs_url),
+                jobs_url = COALESCE(?, jobs_url),
+                scrape_strategy = CASE WHEN ? = 'ok' THEN ? ELSE scrape_strategy END,
+                extraction_provider = CASE WHEN ? = 'ok' THEN ? ELSE extraction_provider END,
+                last_job_count = ?,
+                last_status = ?,
+                error = ?,
+                consecutive_failures = ?,
+                manual_review_reason = ?,
+                last_scraped_at = ?,
+                last_checked_at = ?,
+                next_scrape_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                result.source_url,
+                result.source_url,
+                result.status,
+                result.provider,
+                result.status,
+                result.provider,
+                staged_count,
+                last_status,
+                error,
+                new_failures,
+                manual_reason,
+                timestamp,
+                timestamp,
+                next_scrape,
+                timestamp,
+                company_id,
+            ),
+        )
+
+
+async def scrape_due_companies(db_path: Path, options: NightlyOptions, run_id: int | None) -> tuple[int, int, int, int]:
+    companies = due_registry_companies(db_path, options)
+    if options.dry_run:
+        return len(companies), 0, 0, 0
+    if not companies:
+        return 0, 0, 0, 0
+    ai_client, ai_model = build_ai_client_and_model(None)
+    semaphore = asyncio.Semaphore(max(1, options.workers))
+    totals = {"scraped": 0, "staged": 0, "failed": 0}
+
+    async def scrape_one(seed: dict[str, Any]) -> None:
+        company_id = int(seed["company_id"] if "company_id" in seed else seed["id"])
+        async with semaphore:
+            winner: ProviderScrapeResult | None = None
+            for provider in provider_order(seed, options.provider):
+                result = await run_provider(seed, provider, ai_client, ai_model)
+                staged_count = 0
+                if result.status == "ok" and result.jobs:
+                    staged_count = stage_jobs_for_company(db_path, run_id, company_id, result, options.dry_run)
+                    record_scrape_attempt(db_path, run_id, company_id, result, staged_count, options.dry_run)
+                    log_scrape_attempt_event(db_path, run_id, company_id, result, staged_count)
+                    winner = result
+                    totals["scraped"] += 1
+                    totals["staged"] += staged_count
+                    update_company_after_scrape(db_path, company_id, result, staged_count, options.dry_run)
+                    break
+                record_scrape_attempt(db_path, run_id, company_id, result, 0, options.dry_run)
+                log_scrape_attempt_event(db_path, run_id, company_id, result, 0)
+                if result.status == "ok":
+                    winner = result
+                    totals["scraped"] += 1
+                    update_company_after_scrape(db_path, company_id, result, 0, options.dry_run)
+                    break
+            if winner is None or winner.status != "ok":
+                totals["failed"] += 1
+                update_company_after_scrape(
+                    db_path,
+                    company_id,
+                    winner or ProviderScrapeResult("auto", "failed", [], seed.get("jobs_url"), [], error="All providers failed."),
+                    0,
+                    options.dry_run,
+                )
+
+    try:
+        await asyncio.gather(*(scrape_one(seed) for seed in companies))
+    finally:
+        await ai_client.close()
+    return len(companies), totals["scraped"], totals["staged"], totals["failed"]
+
+
+CLASSIFICATION_PROMPT = """Classify this raw Skagit Valley job posting for a local labor market engine.
+
+Return ONLY valid JSON with this schema:
+{{
+  "normalized_title": "",
+  "onet_code": "",
+  "local_sector": "",
+  "skills": [],
+  "employment_type": "full_time | part_time | temporary | seasonal | contract | internship | unknown",
+  "salary_min": null,
+  "salary_max": null,
+  "salary_type": "hourly | annual | unknown",
+  "education_requirements": "",
+  "experience_requirements": "",
+  "summary": "",
+  "is_local_skagit": true,
+  "confidence_score": 0,
+  "needs_manual_review": false
+}}
+
+Rules:
+- is_local_skagit is true only for jobs located in Skagit County, Washington or clearly serving a Skagit worksite.
+- Remote jobs are not local unless tied to a Skagit employer/worksite.
+- Use a controlled local_sector value such as Healthcare, Manufacturing, Education, Government, Agriculture, Construction, Hospitality, Retail, Transportation, Technology, Professional Services, or Other.
+- Keep summary to two concise sentences.
+- Use null for unknown numeric salary fields.
+
+Company: {company_name}
+Company city/state: {company_location}
+Raw job JSON:
+{raw_job}
+"""
+
+
+def openai_client_and_classification_model() -> tuple[OpenAI, str]:
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for classification batches.")
+    model = os.environ.get("AI_CLASSIFICATION_MODEL") or os.environ.get("AI_JOB_ENRICHMENT_MODEL") or os.environ.get("AI_VERIFICATION_MODEL") or "gpt-5.4-nano"
+    return OpenAI(api_key=api_key), model
+
+
+def build_classification_request(row: db.Row, model: str) -> dict[str, Any]:
+    company_location = ", ".join(part for part in [row["company_city"], row["company_state"]] if part) or "unknown"
+    prompt = (
+        CLASSIFICATION_PROMPT
+        .replace("{company_name}", str(row["business_name"] or "Unknown employer"))
+        .replace("{company_location}", company_location)
+        .replace("{raw_job}", str(row["raw_payload_json"] or "{}"))
+        .replace("{{", "{")
+        .replace("}}", "}")
+    )
+    return {
+        "custom_id": f"staging-job-{row['id']}",
+        "method": "POST",
+        "url": "/v1/responses",
+        "body": {"model": model, "input": prompt},
+    }
+
+
+def attr_value(value: Any, name: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
+def batch_request_counts(batch: Any) -> tuple[int, int, int]:
+    counts = attr_value(batch, "request_counts")
+    if not counts:
+        return 0, 0, 0
+    return (
+        int(attr_value(counts, "total") or 0),
+        int(attr_value(counts, "completed") or 0),
+        int(attr_value(counts, "failed") or 0),
+    )
+
+
+def latest_open_classification_batch(conn: db.Connection) -> db.Row | None:
+    return conn.execute(
+        """
+        SELECT *
+        FROM classification_batches
+        WHERE imported = 0
+          AND status NOT IN ('failed', 'expired', 'cancelled', 'canceled')
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+
+
+def create_classification_batch(db_path: Path, limit: int = 500, no_mark_inactive: bool = False, dry_run: bool = False) -> str:
+    init_db(db_path)
+    model = os.environ.get("AI_CLASSIFICATION_MODEL") or os.environ.get("AI_JOB_ENRICHMENT_MODEL") or os.environ.get("AI_VERIFICATION_MODEL") or "gpt-5.4-nano"
+    with db.connect(db_path, timeout=30) as conn:
+        existing = latest_open_classification_batch(conn)
+        if existing:
+            return f"Classification batch {existing['openai_batch_id'] or existing['id']} is already {existing['status']}."
+        rows = conn.execute(
+            """
+            SELECT sj.*, c.business_name, c.city AS company_city, c.state AS company_state
+            FROM staging_jobs sj
+            JOIN companies c ON c.id = sj.company_id
+            WHERE sj.classification_status = 'pending'
+            ORDER BY sj.created_at ASC, sj.id ASC
+            LIMIT ?
+            """,
+            (max(1, int(limit)),),
+        ).fetchall()
+    if not rows:
+        return "No staging jobs need classification."
+    requests = [build_classification_request(row, model) for row in rows]
+    if dry_run:
+        return f"Dry run: would submit {len(requests)} staging jobs for classification."
+    client, model = openai_client_and_classification_model()
+    requests = [build_classification_request(row, model) for row in rows]
+
+    timestamp = now_iso()
+    temp_path: Path | None = None
+    with db.connect(db_path, timeout=30) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO classification_batches (status, model, total_requests, no_mark_inactive, message, created_at)
+            VALUES ('local_created', ?, ?, ?, 'Preparing OpenAI classification batch', ?)
+            RETURNING id
+            """,
+            (model, len(requests), 1 if no_mark_inactive else 0, timestamp),
+        )
+        batch_id = int(cursor.fetchone()[0])
+        for index, row in enumerate(rows):
+            conn.execute(
+                """
+                INSERT INTO classification_requests (batch_id, staging_job_id, custom_id, status, created_at, updated_at)
+                VALUES (?, ?, ?, 'pending', ?, ?)
+                """,
+                (batch_id, int(row["id"]), requests[index]["custom_id"], timestamp, timestamp),
+            )
+            conn.execute("UPDATE staging_jobs SET classification_status = 'queued' WHERE id = ?", (int(row["id"]),))
+        payload = "\n".join(json.dumps(item, ensure_ascii=False) for item in requests) + "\n"
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".jsonl", delete=False) as handle:
+            temp_path = Path(handle.name)
+            handle.write(payload)
+        with temp_path.open("rb") as handle:
+            uploaded = client.files.create(file=handle, purpose="batch")
+        batch = client.batches.create(input_file_id=uploaded.id, endpoint="/v1/responses", completion_window="24h")
+        total, completed, failed = batch_request_counts(batch)
+        with db.connect(db_path, timeout=30) as conn:
+            conn.execute(
+                """
+                UPDATE classification_batches
+                SET openai_batch_id = ?,
+                    input_file_id = ?,
+                    status = ?,
+                    total_requests = ?,
+                    completed_requests = ?,
+                    failed_requests = ?,
+                    message = ?,
+                    submitted_at = ?,
+                    checked_at = ?
+                WHERE id = ?
+                """,
+                (
+                    batch.id,
+                    uploaded.id,
+                    str(attr_value(batch, "status") or "submitted"),
+                    total or len(requests),
+                    completed,
+                    failed,
+                    f"OpenAI classification batch {batch.id} created.",
+                    now_iso(),
+                    now_iso(),
+                    batch_id,
+                ),
+            )
+        return f"Created OpenAI classification batch {batch.id} for {len(requests)} staging jobs."
+    except Exception:
+        with db.connect(db_path, timeout=30) as conn:
+            conn.execute("UPDATE classification_batches SET status = 'failed', message = ?, checked_at = ? WHERE id = ?", (traceback.format_exc(), now_iso(), batch_id))
+            conn.execute(
+                """
+                UPDATE staging_jobs
+                SET classification_status = 'pending',
+                    classification_error = 'Batch submission failed; row returned to pending.'
+                WHERE id IN (SELECT staging_job_id FROM classification_requests WHERE batch_id = ?)
+                """,
+                (batch_id,),
+            )
+        raise
+    finally:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+
+
+def extract_response_text(body: dict[str, Any]) -> str:
+    if isinstance(body.get("output_text"), str):
+        return body["output_text"]
+    parts: list[str] = []
+    for item in body.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content") or []:
+            if isinstance(content, dict):
+                text = content.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+    return "\n".join(parts)
+
+
+def parse_ai_json_text(text: str) -> dict[str, Any]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start >= 0 and end > start:
+        cleaned = cleaned[start : end + 1]
+    data = json.loads(cleaned)
+    if not isinstance(data, dict):
+        raise ValueError("Classification response was not a JSON object.")
+    return data
+
+
+def parse_batch_output_lines(text: str) -> list[dict[str, Any]]:
+    rows = []
+    for line in text.splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    return rows
+
+
+def clean_classification_text(value: Any, limit: int = 1000) -> str | None:
+    text = clean_optional_text(value, limit)
+    if text and text.lower() not in {"unknown", "null", "none"}:
+        return text
+    return None
+
+
+def clean_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def classification_job_key(company_id: int, staging_row: db.Row, data: dict[str, Any]) -> str:
+    job = {
+        "job_title": data.get("normalized_title") or staging_row["raw_title"],
+        "application_url": staging_row["raw_application_url"],
+    }
+    return job_key(company_id, job)
+
+
+def apply_classification(conn: db.Connection, staging_id: int, data: dict[str, Any]) -> tuple[str, int | None]:
+    row = conn.execute(
+        """
+        SELECT sj.*, c.business_name
+        FROM staging_jobs sj
+        JOIN companies c ON c.id = sj.company_id
+        WHERE sj.id = ?
+        """,
+        (staging_id,),
+    ).fetchone()
+    if not row:
+        return "failed", None
+    confidence = int_between(data.get("confidence_score"))
+    is_local = bool(data.get("is_local_skagit"))
+    needs_review = bool(data.get("needs_manual_review")) or confidence < 60
+    status = "review" if needs_review else "discarded"
+    if not is_local:
+        status = "discarded"
+    if not is_local or needs_review:
+        conn.execute(
+            """
+            UPDATE staging_jobs
+            SET classification_status = ?,
+                classification_json = ?,
+                classified_at = ?,
+                classification_error = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                json.dumps(data, sort_keys=True),
+                now_iso(),
+                "Not local Skagit." if not is_local else "Low confidence or manual review requested.",
+                staging_id,
+            ),
+        )
+        return status, None
+
+    raw = json.loads(row["raw_payload_json"])
+    company_id = int(row["company_id"])
+    key = classification_job_key(company_id, row, data)
+    normalized_title = clean_classification_text(data.get("normalized_title"), 240) or row["raw_title"] or "Untitled job"
+    skills_json = json.dumps(data.get("skills") if isinstance(data.get("skills"), list) else [], ensure_ascii=False)
+    summary = clean_classification_text(data.get("summary"), 900) or row["raw_description"]
+    timestamp = now_iso()
+    cursor = conn.execute(
+        """
+        INSERT INTO job_postings (
+            company_id, job_key, job_title, department, salary_info, location, description,
+            application_url, source_url, source_type, raw_json, first_seen_at, last_seen_at,
+            is_active, is_new, normalized_title, onet_code, local_sector, skills_json,
+            employment_type, salary_min, salary_max, salary_type, education_requirements,
+            experience_requirements, ai_summary, ai_job_category, ai_worker_tags,
+            ai_estimated_pay_range, ai_pay_range_type, ai_confidence_score,
+            ai_needs_manual_review, ai_enriched_at, classification_confidence,
+            is_local_skagit, inactive_at, staging_job_id, pipeline_run_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1, NULL, ?, ?)
+        ON CONFLICT(job_key) DO UPDATE SET
+            job_title = excluded.job_title,
+            location = excluded.location,
+            description = excluded.description,
+            application_url = excluded.application_url,
+            source_url = excluded.source_url,
+            source_type = excluded.source_type,
+            raw_json = excluded.raw_json,
+            last_seen_at = excluded.last_seen_at,
+            is_active = 1,
+            is_new = 0,
+            normalized_title = excluded.normalized_title,
+            onet_code = excluded.onet_code,
+            local_sector = excluded.local_sector,
+            skills_json = excluded.skills_json,
+            employment_type = excluded.employment_type,
+            salary_min = excluded.salary_min,
+            salary_max = excluded.salary_max,
+            salary_type = excluded.salary_type,
+            education_requirements = excluded.education_requirements,
+            experience_requirements = excluded.experience_requirements,
+            ai_summary = excluded.ai_summary,
+            ai_job_category = excluded.ai_job_category,
+            ai_worker_tags = excluded.ai_worker_tags,
+            ai_estimated_pay_range = excluded.ai_estimated_pay_range,
+            ai_pay_range_type = excluded.ai_pay_range_type,
+            ai_confidence_score = excluded.ai_confidence_score,
+            ai_needs_manual_review = excluded.ai_needs_manual_review,
+            ai_enriched_at = excluded.ai_enriched_at,
+            classification_confidence = excluded.classification_confidence,
+            is_local_skagit = 1,
+            inactive_at = NULL,
+            staging_job_id = excluded.staging_job_id,
+            pipeline_run_id = excluded.pipeline_run_id
+        RETURNING id
+        """,
+        (
+            company_id,
+            key,
+            normalized_title,
+            raw.get("department"),
+            raw.get("salary_info"),
+            row["raw_location"],
+            row["raw_description"],
+            row["raw_application_url"],
+            row["source_url"],
+            row["source_type"],
+            row["raw_payload_json"],
+            timestamp,
+            row["scraped_at"] or timestamp,
+            normalized_title,
+            clean_classification_text(data.get("onet_code"), 40),
+            clean_classification_text(data.get("local_sector"), 120) or "Other",
+            skills_json,
+            clean_classification_text(data.get("employment_type"), 40) or "unknown",
+            clean_float(data.get("salary_min")),
+            clean_float(data.get("salary_max")),
+            clean_classification_text(data.get("salary_type"), 20) or "unknown",
+            clean_classification_text(data.get("education_requirements"), 600),
+            clean_classification_text(data.get("experience_requirements"), 600),
+            summary,
+            clean_classification_text(data.get("local_sector"), 120) or "Other",
+            skills_json,
+            raw.get("salary_info"),
+            clean_classification_text(data.get("salary_type"), 20) or "unknown",
+            confidence,
+            timestamp,
+            confidence,
+            staging_id,
+            row["pipeline_run_id"],
+        ),
+    )
+    job_id = int(cursor.fetchone()[0])
+    conn.execute(
+        """
+        UPDATE staging_jobs
+        SET classification_status = 'imported',
+            classification_json = ?,
+            classified_at = ?,
+            classification_error = NULL
+        WHERE id = ?
+        """,
+        (json.dumps(data, sort_keys=True), timestamp, staging_id),
+    )
+    return "imported", job_id
+
+
+def mark_missing_jobs_inactive(conn: db.Connection, company_id: int, pipeline_run_id: int | None) -> None:
+    if pipeline_run_id is None:
+        return
+    pending = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM staging_jobs
+        WHERE company_id = ?
+          AND pipeline_run_id = ?
+          AND classification_status IN ('pending', 'queued')
+        """,
+        (company_id, pipeline_run_id),
+    ).fetchone()[0]
+    if pending:
+        return
+    seen = [
+        row["job_key"]
+        for row in conn.execute(
+            """
+            SELECT DISTINCT jp.job_key
+            FROM job_postings jp
+            JOIN staging_jobs sj ON sj.id = jp.staging_job_id
+            WHERE sj.company_id = ?
+              AND sj.pipeline_run_id = ?
+              AND sj.classification_status = 'imported'
+            """,
+            (company_id, pipeline_run_id),
+        ).fetchall()
+    ]
+    if not seen:
+        return
+    placeholders = ",".join("?" for _ in seen)
+    conn.execute(
+        f"""
+        UPDATE job_postings
+        SET is_active = 0,
+            inactive_at = COALESCE(inactive_at, ?)
+        WHERE company_id = ?
+          AND is_active = 1
+          AND job_key NOT IN ({placeholders})
+        """,
+        [now_iso(), company_id, *seen],
+    )
+
+
+def update_classification_batch_from_openai(conn: db.Connection, local_id: int, batch: Any) -> dict[str, Any]:
+    total, completed, failed = batch_request_counts(batch)
+    status = str(attr_value(batch, "status") or "unknown")
+    output_file_id = attr_value(batch, "output_file_id")
+    error_file_id = attr_value(batch, "error_file_id")
+    timestamp = now_iso()
+    conn.execute(
+        """
+        UPDATE classification_batches
+        SET status = ?,
+            output_file_id = ?,
+            error_file_id = ?,
+            total_requests = ?,
+            completed_requests = ?,
+            failed_requests = ?,
+            checked_at = ?,
+            completed_at = CASE WHEN ? = 'completed' THEN COALESCE(completed_at, ?) ELSE completed_at END
+        WHERE id = ?
+        """,
+        (status, output_file_id, error_file_id, total, completed, failed, timestamp, status, timestamp, local_id),
+    )
+    return {"status": status, "output_file_id": output_file_id, "error_file_id": error_file_id, "total": total, "completed": completed, "failed": failed}
+
+
+def import_classification_output(db_path: Path, local_batch: db.Row, file_ids: list[str], client: OpenAI) -> tuple[int, int]:
+    content = "\n".join(client.files.content(file_id).text for file_id in file_ids if file_id)
+    rows = parse_batch_output_lines(content)
+    imported = 0
+    failures = 0
+    touched_runs: set[tuple[int, int | None]] = set()
+    timestamp = now_iso()
+    with db.connect(db_path, timeout=30) as conn:
+        for item in rows:
+            custom_id = str(item.get("custom_id") or "")
+            request_row = conn.execute(
+                "SELECT * FROM classification_requests WHERE batch_id = ? AND custom_id = ?",
+                (local_batch["id"], custom_id),
+            ).fetchone()
+            if not request_row:
+                failures += 1
+                continue
+            error_text = None
+            status = "failed"
+            try:
+                if item.get("error"):
+                    raise ValueError(json.dumps(item["error"], sort_keys=True))
+                response = item.get("response") if isinstance(item.get("response"), dict) else {}
+                body = response.get("body") if isinstance(response.get("body"), dict) else {}
+                if int(response.get("status_code") or 0) >= 400:
+                    raise ValueError(f"OpenAI response status {response.get('status_code')}")
+                data = parse_ai_json_text(extract_response_text(body))
+                status, job_id = apply_classification(conn, int(request_row["staging_job_id"]), data)
+                if status == "imported":
+                    imported += 1
+                staging = conn.execute("SELECT company_id, pipeline_run_id FROM staging_jobs WHERE id = ?", (request_row["staging_job_id"],)).fetchone()
+                if staging:
+                    touched_runs.add((int(staging["company_id"]), int(staging["pipeline_run_id"]) if staging["pipeline_run_id"] is not None else None))
+            except Exception as exc:
+                failures += 1
+                error_text = str(exc)
+                conn.execute(
+                    """
+                    UPDATE staging_jobs
+                    SET classification_status = 'failed',
+                        classification_error = ?,
+                        classified_at = ?
+                    WHERE id = ?
+                    """,
+                    (error_text, timestamp, int(request_row["staging_job_id"])),
+                )
+            conn.execute(
+                """
+                UPDATE classification_requests
+                SET status = ?, error = ?, raw_response_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, error_text, json.dumps(item, sort_keys=True), timestamp, request_row["id"]),
+            )
+        if not local_batch["no_mark_inactive"]:
+            for company_id, pipeline_run_id in touched_runs:
+                mark_missing_jobs_inactive(conn, company_id, pipeline_run_id)
+        conn.execute(
+            """
+            UPDATE classification_batches
+            SET imported = 1,
+                imported_at = ?,
+                message = ?,
+                failed_requests = CASE WHEN ? > failed_requests THEN ? ELSE failed_requests END
+            WHERE id = ?
+            """,
+            (timestamp, f"Imported {imported} jobs with {failures} failures.", failures, failures, local_batch["id"]),
+        )
+    return imported, failures
+
+
+def check_or_import_classification_batch(db_path: Path, dry_run: bool = False) -> tuple[str, int, int]:
+    init_db(db_path)
+    with db.connect(db_path, timeout=30) as conn:
+        local_batch = latest_open_classification_batch(conn)
+        if not local_batch:
+            return "No open classification batch.", 0, 0
+        if dry_run:
+            return f"Dry run: would check classification batch {local_batch['openai_batch_id'] or local_batch['id']}.", 0, 0
+        if not local_batch["openai_batch_id"]:
+            raise RuntimeError("Latest classification batch was not submitted to OpenAI.")
+        client, _model = openai_client_and_classification_model()
+        batch = client.batches.retrieve(local_batch["openai_batch_id"])
+        state = update_classification_batch_from_openai(conn, int(local_batch["id"]), batch)
+        local_batch = conn.execute("SELECT * FROM classification_batches WHERE id = ?", (local_batch["id"],)).fetchone()
+        if state["status"] in {"failed", "expired", "cancelled", "canceled"}:
+            message = f"OpenAI classification batch {local_batch['openai_batch_id']} is {state['status']}."
+            conn.execute("UPDATE classification_batches SET message = ? WHERE id = ?", (message, local_batch["id"]))
+            return message, 0, state["failed"]
+        if state["status"] != "completed":
+            message = f"OpenAI classification batch {local_batch['openai_batch_id']} is {state['status']} ({state['completed']} of {state['total']} completed)."
+            conn.execute("UPDATE classification_batches SET message = ? WHERE id = ?", (message, local_batch["id"]))
+            return message, 0, 0
+        output_file_id = state["output_file_id"] or local_batch["output_file_id"]
+        error_file_id = state["error_file_id"] or local_batch["error_file_id"]
+    file_ids = [file_id for file_id in (output_file_id, error_file_id) if file_id]
+    if not file_ids:
+        raise RuntimeError("OpenAI classification batch completed without an output or error file.")
+    imported, failures = import_classification_output(db_path, local_batch, file_ids, client)
+    return f"Imported {imported} classified jobs with {failures} failures.", imported, failures
+
+
+def regenerate_market_snapshots(db_path: Path, dry_run: bool = False) -> int:
+    init_db(db_path)
+    snapshot_date = datetime.now(timezone.utc).date().isoformat()
+    timestamp = now_iso()
+    with db.connect(db_path, timeout=30) as conn:
+        sector_rows = conn.execute(
+            """
+            SELECT COALESCE(local_sector, ai_job_category, source_type, 'Unknown') AS dimension_value,
+                   COUNT(*) AS active_job_count,
+                   COUNT(DISTINCT company_id) AS employer_count,
+                   AVG(salary_min) AS avg_salary_min,
+                   AVG(salary_max) AS avg_salary_max
+            FROM job_postings
+            WHERE is_active = 1
+            GROUP BY COALESCE(local_sector, ai_job_category, source_type, 'Unknown')
+            """
+        ).fetchall()
+        occupation_rows = conn.execute(
+            """
+            SELECT COALESCE(onet_code, normalized_title, job_title, 'Unknown') AS dimension_value,
+                   COUNT(*) AS active_job_count,
+                   COUNT(DISTINCT company_id) AS employer_count,
+                   AVG(salary_min) AS avg_salary_min,
+                   AVG(salary_max) AS avg_salary_max
+            FROM job_postings
+            WHERE is_active = 1
+            GROUP BY COALESCE(onet_code, normalized_title, job_title, 'Unknown')
+            """
+        ).fetchall()
+        rows = [("sector", row) for row in sector_rows] + [("occupation", row) for row in occupation_rows]
+        if dry_run:
+            return len(rows)
+        for dimension_type, row in rows:
+            conn.execute(
+                """
+                INSERT INTO market_snapshots (
+                    snapshot_date, dimension_type, dimension_value, active_job_count,
+                    employer_count, avg_salary_min, avg_salary_max, payload_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(snapshot_date, dimension_type, dimension_value) DO UPDATE SET
+                    active_job_count = excluded.active_job_count,
+                    employer_count = excluded.employer_count,
+                    avg_salary_min = excluded.avg_salary_min,
+                    avg_salary_max = excluded.avg_salary_max,
+                    payload_json = excluded.payload_json
+                """,
+                (
+                    snapshot_date,
+                    dimension_type,
+                    row["dimension_value"],
+                    int(row["active_job_count"] or 0),
+                    int(row["employer_count"] or 0),
+                    row["avg_salary_min"],
+                    row["avg_salary_max"],
+                    json.dumps({"generated_at": timestamp}, sort_keys=True),
+                    timestamp,
+                ),
+            )
+    return len(rows)
+
+
+def run_async_blocking(coro: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    result: dict[str, Any] = {}
+
+    def runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro)
+        except BaseException as exc:  # noqa: BLE001 - re-raised in caller thread
+            result["error"] = exc
+
+    thread = threading.Thread(target=runner, daemon=False)
+    thread.start()
+    thread.join()
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
+
+
+def run_nightly(db_path: Path = Path("postgres"), options: NightlyOptions | None = None) -> PipelineSummary:
+    load_dotenv(Path(__file__).with_name(".env"))
+    options = options or NightlyOptions()
+    init_db(db_path)
+    started = time.monotonic()
+    run_id = create_pipeline_run(db_path, options)
+    summary = PipelineSummary(run_id=run_id, status="completed", message="Pipeline completed.")
+    try:
+        log_pipeline_event(db_path, run_id, "start", "Pipeline started.", details=asdict(options))
+        if options.only in {None, "import-batch"} and not options.skip_batch_import:
+            log_pipeline_event(db_path, run_id, "import_batch", "Checking for a completed classification batch.")
+            message, imported, failures = check_or_import_classification_batch(db_path, dry_run=options.dry_run)
+            summary.batch_message = message
+            summary.imported_jobs += imported
+            summary.failed_count += failures
+            log_pipeline_event(
+                db_path,
+                run_id,
+                "import_batch",
+                message,
+                "error" if failures else "info",
+                {"imported_jobs": imported, "failures": failures},
+            )
+        if options.only in {None, "scrape"} and not options.skip_scrape:
+            log_pipeline_event(db_path, run_id, "scrape", "Selecting employers ready to scrape.")
+            considered, scraped, staged, failed = run_async_blocking(scrape_due_companies(db_path, options, run_id))
+            summary.companies_considered += considered
+            summary.companies_scraped += scraped
+            summary.staged_jobs += staged
+            summary.failed_count += failed
+            log_pipeline_event(
+                db_path,
+                run_id,
+                "scrape",
+                f"Scrape finished: {scraped} scraped, {staged} staged, {failed} failed.",
+                "error" if failed else "info",
+                {"companies_considered": considered, "companies_scraped": scraped, "staged_jobs": staged, "failures": failed},
+            )
+        if options.only in {None, "classify"} and not options.skip_batch_submit:
+            log_pipeline_event(db_path, run_id, "submit_batch", "Submitting pending staging rows for classification.")
+            summary.batch_message = create_classification_batch(
+                db_path,
+                limit=options.classification_limit,
+                no_mark_inactive=options.no_mark_inactive,
+                dry_run=options.dry_run,
+            )
+            log_pipeline_event(db_path, run_id, "submit_batch", summary.batch_message)
+        if options.only in {None, "snapshot"} and not options.skip_snapshot:
+            log_pipeline_event(db_path, run_id, "snapshot", "Regenerating market snapshots.")
+            summary.snapshot_rows = regenerate_market_snapshots(db_path, dry_run=options.dry_run)
+            log_pipeline_event(db_path, run_id, "snapshot", f"Snapshot generation finished with {summary.snapshot_rows} row(s).")
+        if options.dry_run:
+            summary.message = "Dry run completed without writes."
+        elif summary.batch_message:
+            summary.message = summary.batch_message
+        log_pipeline_event(db_path, run_id, "finish", summary.message, details=asdict(summary))
+    except Exception as exc:
+        summary.status = "failed"
+        summary.message = str(exc)
+        summary.failed_count += 1
+        log_pipeline_event(
+            db_path,
+            run_id,
+            "failure",
+            str(exc),
+            "error",
+            {"traceback": traceback.format_exc(), "summary": asdict(summary)},
+        )
+        raise
+    finally:
+        finish_pipeline_run(db_path, summary, started)
+    return summary
+
+
 def load_state(path: Path, seeds: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not path.exists():
         return seeds
@@ -2567,6 +4213,22 @@ async def main() -> None:
     crawl_parser.add_argument("--ai-model")
     crawl_parser.add_argument("--print-json", action="store_true")
 
+    nightly_parser = subparsers.add_parser("run-nightly", help="Run the staging-first nightly pipeline.")
+    nightly_parser.add_argument("--limit", type=int)
+    nightly_parser.add_argument("--company-id", type=int)
+    nightly_parser.add_argument("--force", action="store_true")
+    nightly_parser.add_argument("--dry-run", action="store_true")
+    nightly_parser.add_argument("--only", choices=["scrape", "classify", "snapshot", "import-batch"])
+    nightly_parser.add_argument("--skip-scrape", action="store_true")
+    nightly_parser.add_argument("--skip-batch-submit", action="store_true")
+    nightly_parser.add_argument("--skip-batch-import", action="store_true")
+    nightly_parser.add_argument("--skip-snapshot", action="store_true")
+    nightly_parser.add_argument("--provider", choices=["openai", "jina", "firecrawl", "connector", "mitm", "auto"], default="auto")
+    nightly_parser.add_argument("--no-mark-inactive", action="store_true")
+    nightly_parser.add_argument("--workers", type=int, default=1)
+    nightly_parser.add_argument("--classification-limit", type=int, default=500)
+    nightly_parser.add_argument("--print-json", action="store_true")
+
     args = parser.parse_args()
     init_db(args.db)
 
@@ -2576,6 +4238,37 @@ async def main() -> None:
         except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
             parser.error(str(exc))
         print(f"Imported {count} companies into {args.db}")
+        return
+
+    if args.command == "run-nightly":
+        summary = run_nightly(args.db, nightly_options_from_args(args))
+        payload = asdict(summary)
+        if args.print_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"{summary.status}: {summary.message}")
+            print(
+                f"considered={summary.companies_considered} scraped={summary.companies_scraped} "
+                f"staged={summary.staged_jobs} imported={summary.imported_jobs} "
+                f"failures={summary.failed_count} snapshots={summary.snapshot_rows}"
+            )
+        return
+
+    if args.command == "crawl":
+        options = NightlyOptions(
+            limit=args.limit,
+            force=args.force,
+            provider="auto",
+            workers=args.workers,
+            skip_batch_import=True,
+            skip_snapshot=True,
+            no_mark_inactive=False,
+        )
+        summary = run_nightly(args.db, options)
+        if args.print_json:
+            print(json.dumps(asdict(summary), indent=2, sort_keys=True))
+        else:
+            print(f"{summary.status}: staged {summary.staged_jobs} jobs from {summary.companies_scraped} companies. {summary.batch_message or ''}")
         return
 
     try:

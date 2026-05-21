@@ -1,0 +1,27 @@
+<div class="stack">
+  <section class="panel">
+    <div class="table-toolbar">
+      <h2>Market Snapshots</h2>
+      <form method="post" action="{{ url_for('pipeline_snapshot_regenerate') }}">
+        <button class="primary" type="submit">Regenerate</button>
+      </form>
+    </div>
+    <table>
+      <thead><tr><th>Date</th><th>Type</th><th>Value</th><th>Jobs</th><th>Employers</th><th>Salary</th></tr></thead>
+      <tbody>
+        {% for row in pipeline.snapshots %}
+          <tr>
+            <td>{{ row.snapshot_date }}</td>
+            <td>{{ row.dimension_type }}</td>
+            <td>{{ row.dimension_value }}</td>
+            <td>{{ row.active_job_count }}</td>
+            <td>{{ row.employer_count }}</td>
+            <td>{% if row.avg_salary_min or row.avg_salary_max %}{{ row.avg_salary_min or '' }} - {{ row.avg_salary_max or '' }}{% endif %}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="muted">No snapshots yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>

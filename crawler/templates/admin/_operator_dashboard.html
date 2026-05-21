@@ -1,0 +1,63 @@
+<div class="stack">
+  <div class="stats">
+    <div class="stat"><strong>{{ pipeline.due_count }}</strong><span>Employers ready to check</span></div>
+    <div class="stat"><strong>{{ pipeline.counts.staging_pending }}</strong><span>Jobs waiting for AI</span></div>
+    <div class="stat"><strong>{{ pipeline.counts.open_batches }}</strong><span>Batch in progress</span></div>
+    <div class="stat"><strong>{{ stats.review_count }}</strong><span>Needs attention</span></div>
+  </div>
+
+  <section class="panel operator-hero">
+    <div>
+      <h2>Run The Crawler</h2>
+      <p class="muted">This checks employer career pages, stores raw job results, submits new jobs for AI classification, and imports completed AI batches when they are ready.</p>
+    </div>
+    <form method="post" action="{{ url_for('pipeline_run') }}" class="operator-run">
+      <input type="hidden" name="return_tab" value="dashboard">
+      <button class="primary" type="submit">Run Nightly</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <details>
+      <summary class="section-summary">Advanced Test Run</summary>
+      <form method="post" action="{{ url_for('pipeline_run') }}" class="form-grid">
+        <input type="hidden" name="return_tab" value="dashboard">
+        <div><label>Company ID</label><input type="number" name="company_id" min="1" placeholder="Test one employer"></div>
+        <div><label>Limit</label><input type="number" name="limit" min="1" placeholder="First N employers"></div>
+        <div><label>Step</label><select name="only"><option value="">Full run</option><option value="scrape">Scrape only</option><option value="classify">Submit AI batch</option><option value="import-batch">Import completed batch</option><option value="snapshot">Snapshots only</option></select></div>
+        <div><label>Provider</label><select name="provider"><option value="auto">Auto</option><option value="openai">OpenAI</option><option value="connector">Connector</option><option value="jina">Jina</option><option value="firecrawl">Firecrawl</option><option value="mitm">mitm</option></select></div>
+        <div><label>Workers</label><input type="number" name="workers" min="1" max="8" value="1"></div>
+        <div><label>AI batch size</label><input type="number" name="classification_limit" min="1" value="500"></div>
+        <div><label>Safe mode</label><label class="compact-field"><input type="checkbox" name="dry_run" value="1"> Dry run</label></div>
+        <div><label>Timing</label><label class="compact-field"><input type="checkbox" name="force" value="1"> Ignore schedule</label></div>
+        <div><label>Production</label><label class="compact-field"><input type="checkbox" name="no_mark_inactive" value="1"> Do not mark jobs inactive</label></div>
+        <div><label>&nbsp;</label><button class="primary" type="submit">Run Test</button></div>
+      </form>
+    </details>
+  </section>
+
+  <section class="panel">
+    <h2>Latest Run</h2>
+    {% if pipeline.latest_run %}
+      <div class="run-summary">
+        <div><strong>Status</strong><span class="pill {% if pipeline.latest_run.status == 'failed' %}warn{% else %}feature{% endif %}">{{ pipeline.latest_run.status }}</span></div>
+        <div><strong>Result</strong><span>{{ pipeline.latest_run.message or '' }}</span></div>
+        <div><strong>Counts</strong><span>{{ pipeline.latest_run.companies_scraped }} employers checked, {{ pipeline.latest_run.staged_jobs }} raw jobs staged, {{ pipeline.latest_run.imported_jobs }} jobs imported, {{ pipeline.latest_run.failed_count }} failures</span></div>
+        <div><strong>Started</strong><span>{{ display_time(pipeline.latest_run.started_at) }}</span></div>
+      </div>
+      <p><a href="{{ url_for('index', tab='runs') }}">View run logs</a></p>
+    {% else %}
+      <p class="muted">No crawler runs yet.</p>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>How This Works</h2>
+    <div class="operator-steps">
+      <div><strong>1. Scrape</strong><span>Checks employer career pages and saves raw job data.</span></div>
+      <div><strong>2. Classify</strong><span>Sends raw jobs to OpenAI Batch for title, sector, skills, pay, and Skagit location checks.</span></div>
+      <div><strong>3. Publish</strong><span>Imports local, confident jobs into Production Jobs for the public site.</span></div>
+      <div><strong>4. Fix exceptions</strong><span>Unclear jobs and broken employer sources appear on the Jobs or Employers screens.</span></div>
+    </div>
+  </section>
+</div>

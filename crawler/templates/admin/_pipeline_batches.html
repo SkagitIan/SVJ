@@ -1,0 +1,47 @@
+<div class="stack">
+  <section class="panel">
+    <h2>Classification Batch Controls</h2>
+    <div class="task-grid">
+      <div class="task-card">
+        <div>
+          <div class="task-title">Submit Pending Staging Jobs</div>
+          <div class="task-copy">{{ pipeline.counts.staging_pending }} staging rows are pending classification.</div>
+        </div>
+        <form method="post" action="{{ url_for('pipeline_classification_create') }}" class="task-action">
+          <label class="compact-field">Limit <input type="number" name="classification_limit" min="1" value="500"></label>
+          <label class="compact-field"><input type="checkbox" name="no_mark_inactive" value="1"> No inactive marking</label>
+          <button class="primary" type="submit">Create</button>
+        </form>
+      </div>
+      <div class="task-card">
+        <div>
+          <div class="task-title">Check / Import Open Batch</div>
+          <div class="task-copy">{% if pipeline.open_batch %}Batch #{{ pipeline.open_batch.id }} is {{ pipeline.open_batch.status }}.{% else %}No open classification batch.{% endif %}</div>
+        </div>
+        <form method="post" action="{{ url_for('pipeline_classification_check') }}" class="task-action">
+          <button class="primary" type="submit">Check</button>
+        </form>
+      </div>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Classification Batches</h2>
+    <table>
+      <thead><tr><th>ID</th><th>OpenAI</th><th>Status</th><th>Progress</th><th>Message</th><th>Created</th></tr></thead>
+      <tbody>
+        {% for batch in pipeline.batches %}
+          <tr>
+            <td>#{{ batch.id }}</td>
+            <td>{{ batch.openai_batch_id or '' }}</td>
+            <td><span class="pill {% if batch.status == 'failed' %}warn{% elif batch.imported %}feature{% endif %}">{{ batch.status }}{% if batch.imported %} imported{% endif %}</span></td>
+            <td>{{ batch.completed_requests }} / {{ batch.total_requests }}{% if batch.failed_requests %}, {{ batch.failed_requests }} failed{% endif %}</td>
+            <td>{{ batch.message or '' }}</td>
+            <td>{{ display_time(batch.created_at) }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="muted">No classification batches yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>

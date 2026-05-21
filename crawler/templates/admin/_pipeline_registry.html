@@ -1,0 +1,44 @@
+<section class="panel">
+  <div class="table-toolbar">
+    <h2>Employer Registry</h2>
+    <button class="primary" type="button" data-open-dialog="add-company-dialog">+ Company</button>
+  </div>
+  <table>
+    <thead>
+      <tr><th>Employer</th><th>Connector</th><th>Strategy</th><th>Last scrape</th><th>Failures</th><th>Status</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for company in companies %}
+        <tr>
+          <td>
+            <div class="title">{{ company.business_name }}</div>
+            <div class="sub">{{ company.jobs_url or company.career_url or company.homepage_url or company.seed_url }}</div>
+          </td>
+          <td>
+            <div>{{ company.connector_type or '' }}</div>
+            <div class="sub">{{ company.permanent_connector_url or '' }}</div>
+          </td>
+          <td>{{ company.scrape_strategy or company.extraction_provider or 'auto' }}</td>
+          <td>{{ display_time(company.last_scraped_at or company.last_checked_at) }}</td>
+          <td>{{ company.consecutive_failures or 0 }}</td>
+          <td>
+            <span class="pill {% if company.registry_status == 'needs_review' or company.manual_review_reason %}warn{% else %}feature{% endif %}">{{ company.registry_status or 'active' }}</span>
+            {% if company.manual_review_reason %}<div class="sub">{{ company.manual_review_reason }}</div>{% endif %}
+          </td>
+          <td class="actions">
+            <form class="inline" method="post" action="{{ url_for('pipeline_run') }}">
+              <input type="hidden" name="return_tab" value="registry">
+              <input type="hidden" name="company_id" value="{{ company.id }}">
+              <input type="hidden" name="force" value="1">
+              <input type="hidden" name="skip_batch_import" value="1">
+              <input type="hidden" name="skip_snapshot" value="1">
+              <button class="primary" type="submit">Scrape</button>
+            </form>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="muted">No employers registered.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>

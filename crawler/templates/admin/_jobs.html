@@ -1,6 +1,6 @@
 <section class="panel">
   <div class="toolbar">
-    <h2>Current Jobs</h2>
+    <h2>Production Jobs</h2>
     <form class="search" method="get" action="{{ url_for('index') }}">
       <input type="hidden" name="tab" value="jobs">
       <input name="q" value="{{ query }}" placeholder="Search title, company, location">
@@ -36,6 +36,8 @@
             <div class="sub">{{ job.location or "Unknown" }} | {{ job.department or job.source_type }}{% if job.salary_info %} | {{ job.salary_info }}{% endif %}</div>
             {% if job.is_new %}<span class="pill feature">new</span>{% endif %}
             {% if job.is_featured %}<span class="pill feature">sticky</span>{% endif %}
+            {% if not job.is_active %}<span class="pill warn">inactive</span>{% endif %}
+            {% if job.local_sector %}<span class="pill">{{ job.local_sector }}</span>{% endif %}
           </td>
           <td><span class="company-name">{{ job.business_name }}</span>{% if job.company_is_featured %}<div><span class="pill feature">featured</span></div>{% endif %}</td>
           <td><span class="muted">{{ display_time(job.last_seen_at) }}</span></td>
@@ -43,13 +45,13 @@
             <form class="inline" method="post" action="{{ url_for('toggle_job_featured', job_id=job.id) }}">
               <button class="{% if job.is_featured %}featured{% endif %} icon-button" type="submit" aria-label="Toggle sticky job" title="Sticky"><i class="fa-solid fa-thumbtack"></i></button>
             </form>
-            <form class="inline" method="post" action="{{ url_for('delete_job', job_id=job.id) }}" data-confirm="Delete this job?">
-              <button class="danger icon-button" type="submit" aria-label="Delete job"><i class="fa-solid fa-trash"></i></button>
+            <form class="inline" method="post" action="{{ url_for('delete_job', job_id=job.id) }}" data-confirm="Mark this job inactive?">
+              <button class="danger icon-button" type="submit" aria-label="Mark inactive"><i class="fa-solid fa-ban"></i></button>
             </form>
           </td>
         </tr>
       {% else %}
-        <tr><td colspan="4" class="muted">No active jobs found.</td></tr>
+        <tr><td colspan="4" class="muted">No production jobs found.</td></tr>
       {% endfor %}
     </tbody>
   </table>

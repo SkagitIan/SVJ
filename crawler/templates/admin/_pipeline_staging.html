@@ -1,0 +1,27 @@
+<section class="panel">
+  <h2>Staging Jobs</h2>
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Raw Job</th><th>Employer</th><th>Provider</th><th>Status</th><th>Raw Payload</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for job in pipeline.staging %}
+        <tr>
+          <td>#{{ job.id }}</td>
+          <td><div class="title">{{ job.raw_title or 'Untitled' }}</div><div class="sub">{{ job.raw_location or '' }}</div></td>
+          <td>{{ job.business_name }}</td>
+          <td>{{ job.provider }}</td>
+          <td><span class="pill {% if job.classification_status in ['failed', 'review'] %}warn{% elif job.classification_status == 'imported' %}feature{% endif %}">{{ job.classification_status }}</span></td>
+          <td><details><summary>View</summary><pre class="mini-json">{{ job.raw_payload_json }}</pre></details></td>
+          <td class="actions">
+            {% if job.classification_status in ['failed', 'review', 'discarded'] %}
+              <form class="inline" method="post" action="{{ url_for('retry_staging', staging_id=job.id) }}"><button type="submit">Retry</button></form>
+            {% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="muted">No staged jobs yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>

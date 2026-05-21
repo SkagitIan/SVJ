@@ -1,0 +1,115 @@
+<div class="stack">
+  <section class="panel">
+    <div class="table-toolbar">
+      <div>
+        <h2>Jobs</h2>
+        <p class="muted">This page groups jobs by what needs to happen next. Published jobs are visible on the public site. Waiting jobs are raw scraped jobs that still need AI classification.</p>
+      </div>
+      <form class="search" method="get" action="{{ url_for('index') }}">
+        <input type="hidden" name="tab" value="jobs">
+        <input name="q" value="{{ query }}" placeholder="Search jobs">
+        <button type="submit">Search</button>
+      </form>
+    </div>
+    <div class="job-state-grid">
+      <div><strong>{{ stats.active_jobs }}</strong><span>Published</span></div>
+      <div><strong>{{ pipeline.counts.staging_pending }}</strong><span>Waiting for AI</span></div>
+      <div><strong>{{ stats.review_count }}</strong><span>Needs attention</span></div>
+      <div><strong>{{ jobs|selectattr('is_active', 'equalto', 0)|list|length }}</strong><span>Inactive shown below</span></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Needs Attention</h2>
+    <p class="muted">Only individual jobs that need a human decision appear here. System failures are in Advanced > Runs & Logs.</p>
+    <table>
+      <thead><tr><th>Job</th><th>Employer</th><th>Reason</th><th>Raw / Classification</th><th></th></tr></thead>
+      <tbody>
+        {% for item in pipeline.review_items %}
+          <tr>
+            <td><div class="title">{{ item.raw_title or 'Untitled' }}</div><div class="sub">{{ item.raw_location or '' }}</div></td>
+            <td>{{ item.business_name }}</td>
+            <td>{{ item.classification_error or item.classification_status }}</td>
+            <td><details><summary>View</summary><pre class="mini-json">{{ item.classification_json or item.raw_payload_json }}</pre></details></td>
+            <td class="actions">
+              {% if item.classification_json %}
+                <form class="inline" method="post" action="{{ url_for('approve_staging', staging_id=item.id) }}" data-confirm="Approve this staged job into production?"><button class="primary" type="submit">Approve</button></form>
+              {% endif %}
+              <form class="inline" method="post" action="{{ url_for('retry_staging', staging_id=item.id) }}"><button type="submit">Retry</button></form>
+              <form class="inline" method="post" action="{{ url_for('discard_staging', staging_id=item.id) }}"><button class="danger" type="submit">Discard</button></form>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="5" class="muted">No jobs need attention.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>Waiting For AI Classification</h2>
+    <table>
+      <thead><tr><th>Raw Job</th><th>Employer</th><th>Provider</th><th>Scraped</th><th></th></tr></thead>
+      <tbody>
+        {% for item in pipeline.staging if item.classification_status == 'pending' %}
+          <tr>
+            <td><div class="title">{{ item.raw_title or 'Untitled' }}</div><div class="sub">{{ item.raw_location or '' }}</div></td>
+            <td>{{ item.business_name }}</td>
+            <td>{{ item.provider }}</td>
+            <td>{{ display_time(item.scraped_at) }}</td>
+            <td><details><summary>Raw</summary><pre class="mini-json">{{ item.raw_payload_json }}</pre></details></td>
+          </tr>
+        {% else %}
+          <tr><td colspan="5" class="muted">No raw jobs are waiting for classification.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>Published Jobs</h2>
+    <table class="jobs-table">
+      <thead><tr><th>Job</th><th>Company</th><th>Seen</th><th></th></tr></thead>
+      <tbody>
+        {% for job in jobs if job.is_active %}
+          <tr>
+            <td>
+              <div class="title">{{ job.job_title }}</div>
+              <div class="sub">{{ job.location or "Unknown" }} | {{ job.local_sector or job.ai_job_category or job.department or job.source_type }}{% if job.salary_info %} | {{ job.salary_info }}{% endif %}</div>
+              {% if job.is_featured %}<span class="pill feature">sticky</span>{% endif %}
+            </td>
+            <td>{{ job.business_name }}</td>
+            <td><span class="muted">{{ display_time(job.last_seen_at) }}</span></td>
+            <td class="actions">
+              <form class="inline" method="post" action="{{ url_for('toggle_job_featured', job_id=job.id) }}"><button class="{% if job.is_featured %}featured{% endif %} icon-button" type="submit" title="Sticky"><i class="fa-solid fa-thumbtack"></i></button></form>
+              <form class="inline" method="post" action="{{ url_for('delete_job', job_id=job.id) }}" data-confirm="Mark this job inactive?"><button class="danger icon-button" type="submit" title="Mark inactive"><i class="fa-solid fa-ban"></i></button></form>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="4" class="muted">No published jobs found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <details>
+      <summary class="section-summary">Inactive Jobs</summary>
+      <table class="jobs-table">
+        <thead><tr><th>Job</th><th>Company</th><th>Inactive</th><th></th></tr></thead>
+        <tbody>
+          {% for job in jobs if not job.is_active %}
+            <tr>
+              <td><div class="title">{{ job.job_title }}</div><div class="sub">{{ job.location or "Unknown" }}</div></td>
+              <td>{{ job.business_name }}</td>
+              <td>{{ display_time(job.inactive_at) }}</td>
+              <td></td>
+            </tr>
+          {% else %}
+            <tr><td colspan="4" class="muted">No inactive jobs in the current result set.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+  </section>
+</div>

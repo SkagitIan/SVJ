@@ -1,0 +1,60 @@
+<section class="panel">
+  <div class="table-toolbar">
+    <div>
+      <h2>Employers</h2>
+      <p class="muted">These are the employer career sources the crawler checks. Use this screen to fix bad URLs, retry one employer, or clear employer-level failures.</p>
+    </div>
+    <button class="primary" type="button" data-open-dialog="add-company-dialog">+ Employer</button>
+  </div>
+  <table>
+    <thead>
+      <tr><th>Employer</th><th>Career Source</th><th>Last Checked</th><th>Result</th><th>Action</th></tr>
+    </thead>
+    <tbody>
+      {% for company in companies %}
+        <tr>
+          <td>
+            <div class="title">{{ company.business_name }}</div>
+            <div class="sub">{{ company.city or '' }}{% if company.city and company.state %}, {% endif %}{{ company.state or '' }}</div>
+          </td>
+          <td>
+            <a href="{{ company.jobs_url or company.career_url or company.homepage_url or company.seed_url }}" target="_blank">{{ company.jobs_url or company.career_url or company.homepage_url or company.seed_url }}</a>
+            <details class="inline-details">
+              <summary>Technical details</summary>
+              <div class="sub">Strategy: {{ company.scrape_strategy or company.extraction_provider or 'auto' }}</div>
+              <div class="sub">Connector: {{ company.connector_type or '' }} {{ company.permanent_connector_url or '' }}</div>
+              <div class="sub">Next check: {{ display_time(company.next_scrape_at) }}</div>
+            </details>
+          </td>
+          <td>{{ display_time(company.last_scraped_at or company.last_checked_at) or 'Never' }}</td>
+          <td>
+            {% if company.manual_review_reason or company.registry_status == 'needs_review' or company.consecutive_failures %}
+              <span class="pill warn">Needs fix</span>
+              <div class="sub">{{ company.manual_review_reason or company.error or 'Recent scrape failures' }}</div>
+            {% elif company.last_status == 'ok' %}
+              <span class="pill feature">OK</span>
+            {% else %}
+              <span class="pill">Not checked</span>
+            {% endif %}
+          </td>
+          <td class="actions">
+            <form class="inline" method="post" action="{{ url_for('pipeline_run') }}">
+              <input type="hidden" name="return_tab" value="employers">
+              <input type="hidden" name="company_id" value="{{ company.id }}">
+              <input type="hidden" name="force" value="1">
+              <input type="hidden" name="only" value="scrape">
+              <button class="primary" type="submit">Check Now</button>
+            </form>
+            {% if company.manual_review_reason or company.registry_status == 'needs_review' or company.consecutive_failures %}
+              <form class="inline" method="post" action="{{ url_for('resolve_company_review', company_id=company.id) }}">
+                <button type="submit">Clear</button>
+              </form>
+            {% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="muted">No employers registered.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>

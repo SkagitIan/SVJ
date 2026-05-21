@@ -1,0 +1,67 @@
+<div class="stack">
+<section class="panel">
+  <div class="table-toolbar">
+    <h2>Runs & Logs</h2>
+    <form method="post" action="{{ url_for('pipeline_run') }}">
+      <input type="hidden" name="return_tab" value="runs">
+      <input type="hidden" name="dry_run" value="1">
+      <input type="hidden" name="limit" value="1">
+      <button type="submit">Dry Run 1</button>
+    </form>
+  </div>
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Status</th><th>Counts</th><th>Message</th><th>Log</th><th>Started</th><th>Duration</th></tr>
+    </thead>
+    <tbody>
+      {% for run in pipeline.runs %}
+        <tr>
+          <td>#{{ run.id }}</td>
+          <td><span class="pill {% if run.status == 'failed' %}warn{% elif run.status == 'completed' %}feature{% endif %}">{{ run.status }}</span></td>
+          <td>{{ run.companies_scraped }} scraped / {{ run.staged_jobs }} staged / {{ run.imported_jobs }} imported / {{ run.failed_count }} failed</td>
+          <td>{{ run.message or '' }}</td>
+          <td>
+            <details class="task-log" {% if run.status == 'failed' %}open{% endif %}>
+              <summary>{{ pipeline.events_by_run.get(run.id, [])|length }} event{{ 's' if pipeline.events_by_run.get(run.id, [])|length != 1 else '' }}</summary>
+              <pre class="mini-json">{{ run.options_json }}</pre>
+              {% for event in pipeline.events_by_run.get(run.id, []) %}
+                <details class="task-log-event {% if event.level == 'error' %}task-log-error{% endif %}" {% if event.level == 'error' %}open{% endif %}>
+                  <summary>{{ display_time(event.created_at) }} | {{ event.step }} | {{ event.level }} | {{ event.message }}</summary>
+                  {% if event.details_json %}<pre>{{ event.details_json }}</pre>{% endif %}
+                </details>
+              {% else %}
+                <div class="muted">No detailed events were recorded for this run. Runs created after this update will include step logs.</div>
+              {% endfor %}
+            </details>
+          </td>
+          <td>{{ display_time(run.started_at) }}</td>
+          <td>{% if run.duration_ms %}{{ run.duration_ms }} ms{% endif %}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="muted">No pipeline runs yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel">
+  <h2>Recent Provider Attempts</h2>
+  <table>
+    <thead><tr><th>When</th><th>Employer</th><th>Provider</th><th>Status</th><th>Staged</th><th>Error</th></tr></thead>
+    <tbody>
+      {% for attempt in pipeline.attempts[:40] %}
+        <tr>
+          <td>{{ display_time(attempt.created_at) }}</td>
+          <td>{{ attempt.business_name }}</td>
+          <td>{{ attempt.provider }}</td>
+          <td><span class="pill {% if attempt.status == 'failed' %}warn{% else %}feature{% endif %}">{{ attempt.status }}</span></td>
+          <td>{{ attempt.staged_job_count }}</td>
+          <td>{{ attempt.error or '' }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="muted">No provider attempts yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+</div>

@@ -1,0 +1,59 @@
+<div class="stack">
+  <section class="panel">
+    <h2>Jobs That Need A Decision</h2>
+    <p class="muted">This is for individual job postings where classification was uncertain, local status is unclear, or a parsing failure needs a retry. System failures like batch upload errors belong in Runs & Logs.</p>
+    <table>
+      <thead><tr><th>Job</th><th>Employer</th><th>Status</th><th>Reason</th><th>Classification</th><th></th></tr></thead>
+      <tbody>
+        {% for item in pipeline.review_items %}
+          <tr>
+            <td><div class="title">{{ item.raw_title or 'Untitled' }}</div><div class="sub">{{ item.raw_location or '' }}</div></td>
+            <td>{{ item.business_name }}</td>
+            <td><span class="pill warn">{{ item.classification_status }}</span></td>
+            <td>{{ item.classification_error or '' }}</td>
+            <td><details><summary>View</summary><pre class="mini-json">{{ item.classification_json or item.raw_payload_json }}</pre></details></td>
+            <td class="actions">
+              {% if item.classification_json %}
+                <form class="inline" method="post" action="{{ url_for('approve_staging', staging_id=item.id) }}" data-confirm="Approve this staged job into production?"><button class="primary" type="submit">Approve</button></form>
+              {% endif %}
+              <form class="inline" method="post" action="{{ url_for('retry_staging', staging_id=item.id) }}"><button type="submit">Retry</button></form>
+              <form class="inline" method="post" action="{{ url_for('discard_staging', staging_id=item.id) }}"><button class="danger" type="submit">Discard</button></form>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="muted">No classification review items.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  <section class="panel">
+    <h2>Employers That Need A Fix</h2>
+    <p class="muted">This is for employer sources with repeated scrape failures, missing connectors, or manual-review notes.</p>
+    <table>
+      <thead><tr><th>Employer</th><th>Status</th><th>Failures</th><th>Reason</th><th></th></tr></thead>
+      <tbody>
+        {% for company in pipeline.review_companies %}
+          <tr>
+            <td><div class="title">{{ company.business_name }}</div><div class="sub">{{ company.jobs_url or company.homepage_url or company.seed_url }}</div></td>
+            <td><span class="pill warn">{{ company.registry_status or 'needs_review' }}</span></td>
+            <td>{{ company.consecutive_failures or 0 }}</td>
+            <td>{{ company.manual_review_reason or company.error or '' }}</td>
+            <td class="actions">
+              <form class="inline" method="post" action="{{ url_for('pipeline_run') }}">
+                <input type="hidden" name="return_tab" value="review">
+                <input type="hidden" name="company_id" value="{{ company.id }}">
+                <input type="hidden" name="force" value="1">
+                <input type="hidden" name="skip_batch_import" value="1">
+                <input type="hidden" name="skip_snapshot" value="1">
+                <button class="primary" type="submit">Retry scrape</button>
+              </form>
+              <form class="inline" method="post" action="{{ url_for('resolve_company_review', company_id=company.id) }}"><button type="submit">Clear</button></form>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="5" class="muted">No employer review items.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
